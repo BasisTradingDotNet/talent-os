@@ -2,7 +2,10 @@
 
 **Date:** 2026-09-27 · **Owner:** Hitesh Bhatia
 
-Hitesh answered Q1–Q4 directly and delegated Q5–Q50 ("use your recommendations"). ★ marks the
+Hitesh answered Q1–Q4 directly and delegated Q5–Q50 ("use your recommendations"). Later the same day
+he set the target, *"a system dedicated to my company, designed to screen 500 candidates a day, with an
+AI summary and classification from a locally run model"*, and answered four follow-ups (Q51–Q54,
+section 14). Rows those answers changed are marked **revised**. ★ marks the
 option that was recommended when the question was posed. Where Hitesh's answers to Q3 and Q4 changed
 what the right answer was, the entry says **adjusted for Q3/Q4** and names the original ★.
 
@@ -40,7 +43,7 @@ Two answers shaped everything else:
 | # | Question | Decision | Other options | What it means |
 |---|---|---|---|---|
 | 9 | How is each job's interview plan defined? | **Templates, customised per job** ★ | One global pipeline · built fresh per job | The Quant kit's four stages become the first template. New jobs clone a template. |
-| 10 | What happens when a candidate passes or misses a threshold? | **Suggest; a human moves them** ★ | Auto-advance passes · fully automatic | Verdict chips only. Nothing is rejected automatically (a CLAUDE.md ground rule). |
+| 10 | What happens when a candidate passes or misses a threshold? | **Suggest; a human moves them** ★ — **revised:** except the knockout rules in Q53 | Auto-advance passes · fully automatic | Verdict chips only. Nothing is rejected automatically (a CLAUDE.md ground rule). |
 | 11 | Which steps need sign-off beyond the hiring manager? | **Offer terms** ★ and **hire / no-hire decision** ★ | Opening a job · moving to final round | Leadership approval records on decisions and offers. |
 | 12 | What happens to candidates you don't hire? | **Rejection reasons + opt-in talent pool** ★ | Reasons only · full CRM with nurture emails | A structured reasons taxonomy feeds analytics. Near-misses are kept only with consent (see Q45). |
 
@@ -50,8 +53,8 @@ Two answers shaped everything else:
 |---|---|---|---|---|
 | 13 | Public careers site? | **Hosted on your domain** ★ | Embedded in the main website · none | Server-rendered job pages with Google for Jobs markup, an application form and per-org branding. |
 | 14 | How do jobs reach LinkedIn, Naukri, eFinancialCareers and crypto boards? | **Google for Jobs + tracked links** ★ (fits Q4) | Paid multiposting · direct board integrations | You post by hand with a per-board tracked link, so every applicant's source is attributed. |
-| 15 | Intake channels besides direct applications? | **Bulk import** ★, **employee referrals**, **sourced prospects**. No agency portal. | — (multi-select) | CSV import (e.g. the current Quant search), referral links, prospects added by hand. |
-| 16 | What does the app do with CVs? | **AI parse + summary; humans decide** ★ | Parse only · AI ranking · store PDF only | Claude extracts fields and writes a short summary against the job. No ranking and no scores (see Q44). |
+| 15 | Intake channels besides direct applications? | **Revised by Q54:** the careers site and the hiring@ mailbox are the main channels. Bulk import ★ stays for backfills; referrals and prospects come later. No agency portal. | — (multi-select) | CSV import (e.g. the current Quant search), referral links, prospects added by hand. |
+| 16 | What does the app do with CVs? | **Revised by Q52:** a local model scores each application against the job's screening rubric, suggests a tier and writes a summary; a human confirms | Parse only · AI ranking · store PDF only | Tiering is now in scope, by Hitesh's call. See section 14. |
 
 ## 5 · Interview kits — delegated
 
@@ -119,7 +122,7 @@ Two answers shaped everything else:
 | # | Question | Decision | Other options | What it means |
 |---|---|---|---|---|
 | 43 | How deep do analytics go? | **Funnel to question level** ★ | Funnel and counts · exports only | Funnel, time in stage, source quality, interviewer calibration, and which questions actually predict outcomes. |
-| 44 | Can candidate data go to an LLM API (Claude)? | **Yes — disclosed in the privacy notice, contact details redacted** ★ | Anonymised content only · none | Under Anthropic's commercial terms, API data is not used for training. |
+| 44 | Can candidate data go to an LLM API (Claude)? | **Revised: local model only** (Ollama on the Studio). Candidate data never leaves the machine. | API with disclosure + redaction ★ · anonymised only | No LLM API for candidate data. Hosted models may still help author kits (Q20), which contain no personal data. |
 | 45 | How long is candidate data kept? | **12 months for unsuccessful candidates; 24 with talent-pool consent; configurable per org** ★ | 6 months · indefinitely | Then anonymised. Covers UK tribunal claim windows with margin; compatible with UK GDPR and India's DPDP Act. |
 | 46 | Which role kits come after Quant Trader? | **Software engineer (Rust/Python) and Quant researcher** — *assumed; confirm* | Ops / risk / finance · BD / investor relations | Each is drafted with AI (Q20) and published by a human. |
 
@@ -128,9 +131,28 @@ Two answers shaped everything else:
 | # | Question | Decision | Other options | What it means |
 |---|---|---|---|---|
 | 47 | Stack? | **House stack** ★: NestJS + Prisma + Postgres, React + Vite + TS | Next.js full-stack · Python API | As built; matches the auction project and treasury-api. |
-| 48 | Where does it run? | **Dev on the Studio, prod in a UK cloud region** ★ | Studio for everything · cloud for both | **v0 runs on the Studio today** for speed. Move prod before candidate volume grows: a home power or network cut would drop a live interview. |
-| 49 | Monthly budget for hosting and services? | **Up to £150/month** ★ | Up to £500 · not a constraint | Mostly hosting and LLM usage. Q4 removed most vendor costs. |
+| 48 | Where does it run? | **Revised: on the Studio**, because the screening model lives there — with a UPS, a nightly off-site backup and an uptime alert. (★ was prod in a UK cloud region) | Studio for everything · cloud for both | **v0 runs on the Studio today** for speed. Move prod before candidate volume grows: a home power or network cut would drop a live interview. |
+| 49 | Monthly budget for hosting and services? | **Up to £150/month** ★ | Up to £500 · not a constraint | **Revised:** the local model removes LLM API spend; what's left is off-site backups and a UPS. |
 | 50 | Repo and product name? | **talent-os** (Hitesh) | hiring ★ · btnet-hiring | `BasisTradingDotNet/talent-os`. |
+
+## 14 · Volume and local AI — answered by Hitesh (follow-up)
+
+**Requirement:** screen about **500 applications a day**. A **locally run model** gives the interviewer
+a summary and a classification for each one. At that volume, a 30-second human look per applicant is
+already about four hours a day, so the model decides the order of work, not the outcome.
+
+| # | Question | Decision | Other options | What it means |
+|---|---|---|---|---|
+| 51 | How far beyond hiring? | **Hiring + hand-off** ★ | Hiring + employee records · full HRIS | talent-os is G-20's hiring system of record up to "hired". Employee records stay with the EOR, and all effort goes into screening at volume. |
+| 52 | What does the local model produce per application? | **Per-job screening rubric: a 0–3 score per criterion with a quoted line of evidence, a suggested tier (Strong / Possible / Unlikely), and a short summary** ★ | Fixed global tiers · summary + tags only | Screening becomes "stage 0" of the interview plan and reuses the kit machinery. A criterion with no quote is scored "unknown", never guessed. A human confirms the tier. |
+| 53 | At 500/day, how are low-fit applicants rejected? | **Auto-reject on knockout rules Hitesh sets** | Human bulk-confirm ★ · auto-reject on AI tier | Only deterministic rules reject automatically (e.g. notice > 90 days); **AI tiers never reject**. Safeguards: knockouts are shown on the application form; rejection emails go out after a delay; every auto-rejection is logged and reversible; each carries a "request human review" link; no rule may touch protected characteristics. |
+| 54 | Where do the 500/day come from? | **Careers site + tracked links** ★ and **the hiring@ mailbox** | Board exports · referrals and agencies | Boards link to the talent-os apply page. CVs emailed to `hiring@basistrading.net` are ingested and parsed automatically. |
+
+**Model:** `qwen3.5:122b` is already installed on the Studio (M3 Ultra, 256 GB). Benchmark it against
+`qwen38-27b` on about 50 hand-labelled synthetic CVs for accuracy against human tiers and for
+throughput, then choose. The expected cost is roughly 10–20 s per CV, which puts 500 a day at a few
+hours of background compute. Use a standard instruct model, not the uncensored variant also
+installed there.
 
 ## Operational decisions made on the day
 

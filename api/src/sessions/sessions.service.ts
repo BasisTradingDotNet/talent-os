@@ -19,6 +19,7 @@ import { INTEGRITY_FLAG_TYPES } from '../candidate-view/consent';
 import { cfg } from '../common/config';
 import { bad } from '../common/validate';
 import { KitService, LoadedKit } from '../kit/kit.service';
+import { MarketService } from '../market/market.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { sectionEndsAt } from './timing';
 import { makeSessionOrders } from './ordering';
@@ -183,7 +184,7 @@ export function toSession(row: SessionRow, kit: LoadedKit, now = new Date()): Se
     extensionMinutes: row.extensionMinutes,
     questionOrder: Array.isArray(row.questionOrder) ? (row.questionOrder as string[]).map(String) : null,
     transcript: { status: 'none', model: null, noteModel: null, updatedAt: null, error: null, lines: [] }, // transcription not built yet
-    market: null, // WIRE(market): SessionMarket for market sections
+    market: null, // filled in by SessionsService / exports via MarketService.sessionMarket()
   };
 }
 
@@ -284,7 +285,11 @@ function selfPaced(): never {
 export class SessionsService {
   private readonly logger = new Logger(SessionsService.name);
 
-  constructor(private readonly prisma: PrismaService, private readonly kits: KitService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly kits: KitService,
+    private readonly market: MarketService,
+  ) {}
 
   /** v1.2: completes self-paced live sessions once sectionEndsAt + 60 s has passed. Runs every minute. */
   @Cron(CronExpression.EVERY_MINUTE)
@@ -322,7 +327,9 @@ export class SessionsService {
 
   private async present_(orgId: string, id: string): Promise<Session> {
     const row = await this.row(orgId, id);
-    return toSession(row, await this.kits.kitById(orgId, row.kitId));
+    const session = toSession(row, await this.kits.kitById(orgId, row.kitId));
+    session.market = await this.market.sessionMarket(session.id);
+    return session;
   }
 
   async get(orgId: string, id: string): Promise<Session> {
@@ -360,7 +367,9 @@ export class SessionsService {
       },
       include: SESSION_INCLUDE,
     });
-    return toSession(row, kit);
+    const session = toSession(row, kit);
+    session.market = await this.market.sessionMarket(session.id);
+    return session;
   }
 
   /** v1.1: adds minutes to the section time limit; bumps the candidate version so the countdown updates. */

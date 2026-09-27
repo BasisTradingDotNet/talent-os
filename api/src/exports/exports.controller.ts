@@ -1,4 +1,5 @@
 import { Controller, Get, Param, Res } from '@nestjs/common';
+import { MarketService } from '../market/market.service';
 import type { Response } from 'express';
 import type { CandidateDetail, CandidateScorecard } from '../contracts/api';
 import type { SectionSeed } from '../contracts/kit-seed';
@@ -61,6 +62,7 @@ export class ExportsController {
     private readonly kits: KitService,
     private readonly candidates: CandidatesService,
     private readonly prisma: PrismaService,
+    private readonly market: MarketService,
   ) {}
 
   @Get('candidates.csv')
@@ -87,7 +89,11 @@ export class ExportsController {
     const cache = new KitCache(this.kits, org.id);
     const now = new Date();
     const sessions = [];
-    for (const row of rows) sessions.push(toSession(row, await cache.get(row.kitId), now));
+    for (const row of rows) {
+      const session = toSession(row, await cache.get(row.kitId), now);
+      session.market = await this.market.sessionMarket(session.id);
+      sessions.push(session);
+    }
     const scorecard: CandidateScorecard = {
       exportedAt: now.toISOString(),
       kit: { slug: kit.row.slug, version: kit.row.version, title: kit.row.title },

@@ -11,6 +11,7 @@ import type { CandidateState, IntegrityEventType, RecordingStream } from '../con
 import type { SectionSeed } from '../contracts/kit-seed';
 import { cfg } from '../common/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { MarketService } from '../market/market.service';
 import { RecordingsService } from '../recordings/recordings.service';
 import { choiceOrderFor, inDisplayOrder, toCanonicalChoice, toDisplayChoice } from '../sessions/ordering';
 import { applyEnd, applyPresent } from '../sessions/sessions.service';
@@ -74,7 +75,11 @@ export interface EventInput {
 export class CandidateViewService {
   private readonly logger = new Logger(CandidateViewService.name);
 
-  constructor(private readonly prisma: PrismaService, private readonly recordings: RecordingsService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly recordings: RecordingsService,
+    private readonly market: MarketService,
+  ) {}
 
   /** 404 for unknown tokens and for sections without a candidate view. Never reveals which. */
   async load(token: string): Promise<TokenSession> {
@@ -150,7 +155,9 @@ export class CandidateViewService {
       timeMinutes: q.timeMinutes,
       choices: q.choices,
     }));
+    const market = await this.market.candidateMarket(s.id);
     return buildCandidateState({
+      market,
       orgName: cfg().candidateBrand ?? s.org.name,
       section: this.stateSection(ts),
       candidateInstructions: s.kit.candidateInstructions,

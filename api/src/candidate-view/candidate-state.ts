@@ -2,7 +2,7 @@
  * SECURITY-CRITICAL. Builds the only payload an unauthenticated request can receive.
  * Every field is assigned explicitly from an allowlisted source — never spread a DB row here.
  */
-import type {
+import type { CandidateMarket,
   AutoScoring,
   CandidateAnswer,
   CandidatePhase,
@@ -65,6 +65,8 @@ export interface CandidateStateInput {
   sectionEndsAt: Date | null;
   /** v1.2: display positions (1-based) the candidate has answered. */
   answeredPositions: number[];
+  /** v1.2: from MarketService.candidateMarket() — already allowlisted field by field. */
+  market?: CandidateMarket | null;
 }
 
 export function phaseFor(status: string, presentedQuestionKey: string | null): CandidatePhase {
@@ -133,7 +135,7 @@ export function buildCandidateState(input: CandidateStateInput): CandidateState 
     selfPaced: !!input.section.selfPaced,
     answeredPositions: [...new Set(input.answeredPositions.filter((p) => Number.isInteger(p) && p >= 1))].sort((a, b) => a - b),
     marking: marking ? { correct: marking.correct, wrong: marking.wrong, blank: marking.blank } : null,
-    market: null, // WIRE(market): CandidateMarket for market sections
+    market: input.market ?? null,
   };
   return state;
 }

@@ -1,8 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Download, Plus } from 'lucide-react';
+import { Download, Flag, Plus, Video } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import type { CandidateSummary, SectionDef } from '@contracts/api';
+import type { CandidateSummary, SectionDef, SessionSummary } from '@contracts/api';
 import { api, exportUrls } from '../api/client';
 import { qk, useCandidates, useKit } from '../api/hooks';
 import { meanRating, sectionsByStage } from '../lib/summary';
@@ -140,6 +140,7 @@ function SectionCell({ c, s }: { c: CandidateSummary; s: SectionDef }) {
         <div className="text-slate-600">
           traps {ss.trapsNoticed} · bonuses {ss.bonusesGiven}
         </div>
+        <RecordedBadge ss={ss} />
         {v?.complete ? <ResultChip verdict={v} /> : <span className="chip bg-slate-100 text-slate-600">{ss.status}</span>}
       </div>
     );
@@ -149,7 +150,27 @@ function SectionCell({ c, s }: { c: CandidateSummary; s: SectionDef }) {
     <div className="space-y-0.5 text-xs">
       <div className="text-sm font-medium">{ss.recommendation ?? <span className="text-slate-400">no recommendation</span>}</div>
       <div className="text-slate-600">mean {mean ?? '—'} / 5</div>
+      <RecordedBadge ss={ss} />
       <span className="chip bg-slate-100 text-slate-600">{ss.status}</span>
     </div>
+  );
+}
+
+/** v1: recorded icon + integrity flag count (hidden when neither applies). */
+export function RecordedBadge({ ss }: { ss: SessionSummary }) {
+  if (!ss.recorded && ss.integrityFlags === 0) return null;
+  return (
+    <span className="inline-flex items-center gap-2 text-xs" data-testid="recorded-badge">
+      {ss.recorded && (
+        <span className="inline-flex items-center gap-0.5 text-slate-600" title="Recorded (camera, microphone, screen)">
+          <Video size={12} /> rec
+        </span>
+      )}
+      {ss.integrityFlags > 0 && (
+        <span className="inline-flex items-center gap-0.5 text-red-700" title="Integrity flags: tab hidden, window blur, paste, share stopped">
+          <Flag size={12} /> {ss.integrityFlags}
+        </span>
+      )}
+    </span>
   );
 }

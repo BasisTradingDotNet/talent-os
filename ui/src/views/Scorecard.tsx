@@ -1,7 +1,9 @@
+import { useQueries } from '@tanstack/react-query';
 import { Printer } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
-import type { CandidateDetail, Kit, SectionDef, SessionSummary } from '@contracts/api';
-import { useCandidate, useKit, useMe } from '../api/hooks';
+import type { CandidateDetail, Kit, SectionDef, Session, SessionSummary } from '@contracts/api';
+import { api } from '../api/client';
+import { qk, useCandidate, useKit, useMe } from '../api/hooks';
 import { meanRating, sectionsByStage } from '../lib/summary';
 import { fmtDate } from '../lib/time';
 
@@ -15,8 +17,17 @@ export function Scorecard() {
   return <Sheet c={cand.data} kit={kit.data} interviewer={me.data?.email ?? ''} />;
 }
 
+const ANSWER_MAX = 1000;
+
 function Sheet({ c, kit, interviewer }: { c: CandidateDetail; kit: Kit; interviewer: string }) {
   const sections = sectionsByStage(kit);
+  // Full sessions carry the candidate's typed answers (SessionSummary does not).
+  const ids = Object.values(c.latest).map((ss) => ss.id);
+  const full = useQueries({ queries: ids.map((id) => ({ queryKey: qk.session(id), queryFn: () => api().getSession(id) })) });
+  const sessionById = new Map<string, Session>();
+  full.forEach((q) => {
+    if (q.data) sessionById.set(q.data.id, q.data);
+  });
   return (
     <div className="mx-auto max-w-[210mm] bg-white p-8 text-[13px] leading-snug text-slate-900 print:p-0">
       <div className="no-print mb-4 flex items-center gap-2">
@@ -41,7 +52,7 @@ function Sheet({ c, kit, interviewer }: { c: CandidateDetail; kit: Kit; intervie
       </table>
 
       {sections.map((s) => (
-        <SectionBlock key={s.key} s={s} kit={kit} ss={c.latest[s.key]} />
+        <SectionBlock key={s.key} s={s} kit={kit} ss={c.latest[s.key]} full={c.latest[s.key] ? sessionById.get(c.latest[s.key].id) : undefined} />
       ))}
 
       <h2 className="mt-5 border-b border-slate-300 pb-1 text-sm font-semibold uppercase tracking-wide">Overall</h2>
@@ -66,11 +77,18 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
   );
 }
 
-function SectionBlock({ s, kit, ss }: { s: SectionDef; kit: Kit; ss: SessionSummary | undefined }) {
+function SectionBlock({ s, kit, ss, full }: { s: SectionDef; kit: Kit; ss: SessionSummary | undefined; full: Session | undefined }) {
+  const answers = full
+    ? s.questionKeys
+        .map((k) => ({ key: k, r: full.responses.find((r) => r.questionKey === k) }))
+        .filter((x) => x.r?.candidateAnswer)
+    : [];
   return (
     <div className="mt-5 break-inside-avoid">
       <h2 className="border-b border-slate-300 pb-1 text-sm font-semibold uppercase tracking-wide">
         {s.label}
+        {ss?.recorded && <span className="ml-2 font-normal normal-case tracking-normal text-slate-500">· recorded</span>}
+        {ss && ss.integrityFlags > 0 && <span className="ml-2 font-normal normal-case tracking-normal text-red-700">· {ss.integrityFlags} integrity flags</span>}
       </h2>
       {!ss ? (
         <p className="mt-1 text-slate-400">Not run.</p>
@@ -100,6 +118,20 @@ function SectionBlock({ s, kit, ss }: { s: SectionDef; kit: Kit; ss: SessionSumm
             <Row k="Status" v={`${ss.status} · ${fmtDate(ss.startedAt ?? ss.createdAt)}`} />
           </tbody>
         </table>
+      )}
+      {answers.length > 0 && (
+        <div className="mt-2" data-testid="scorecard-answers">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Candidate's typed answers</h3>
+          <table className="mt-1 w-full">
+            <tbody>
+              {answers.map(({ key, r }) => {
+                const text = r!.candidateAnswer!;
+                const score = r!.score !== null ? ` (score ${r!.score})` : '';
+                return <Row key={key} k={`${key}${score}`} v={text.length > ANSWER_MAX ? `${text.slice(0, ANSWER_MAX)}… [truncated, ${text.length} chars]` : text} />;
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

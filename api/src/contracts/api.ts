@@ -9,6 +9,10 @@
  * interviewer drives the session live, and the candidate's browser records camera + microphone and
  * the entire screen, uploaded in chunks. Recordings are kept 90 days after the hiring decision.
  *
+ * v1.1 (2026-09-27): section time limits. A started session counts down section.timeMinutes plus
+ * any interviewer extensions; when it runs out the candidate's answers lock (15 s grace for the
+ * final autosave). The interviewer ends the session; recording continues until then.
+ *
  * Conventions
  * - JSON over HTTP, everything under /api.
  * - Timestamps are ISO-8601 UTC strings. IDs are opaque strings.
@@ -228,6 +232,13 @@ export interface Session {
   recording: SessionRecording;
   /** v1: integrity timeline reported by the candidate's browser, oldest first. */
   events: IntegrityEvent[];
+  /**
+   * v1.1: when the section's time runs out = startedAt + section.timeMinutes + extensionMinutes.
+   * Null before start or when the section has no time limit.
+   */
+  sectionEndsAt: string | null;
+  /** v1.1: minutes the interviewer has added (extra time, tech trouble, adjustments). */
+  extensionMinutes: number;
 }
 
 // ---- v1: recording + integrity -------------------------------------------------------------
@@ -289,6 +300,7 @@ export interface IntegrityEvent {
 // PATCH /api/sessions/:id                         body: UpdateSession   → Session
 // POST  /api/sessions/:id/end                                           → Session   (→ completed)
 // POST  /api/sessions/:id/reopen                                        → Session   (completed → live)
+// POST  /api/sessions/:id/extend                  body: ExtendSession   → Session   (v1.1; ready or live)
 // GET   /api/sessions/:id/recordings/:segmentId   → the media file (Content-Type = segment mimeType),
 //                                                   HTTP Range supported for seeking. PROTECTED.
 
@@ -297,6 +309,12 @@ export interface CreateSession {
   section: SectionKey;
   /** v1. Default: section.candidateView. False = no consent/recording (e.g. an adjustment). */
   recordingRequired?: boolean;
+}
+
+/** v1.1 */
+export interface ExtendSession {
+  /** Integer 1–60. Bumps the candidate version so their countdown updates. */
+  minutes: number;
 }
 
 export interface PresentQuestion {
@@ -418,6 +436,7 @@ export interface CandidateScorecard {
 // POST /api/candidate/:token/consent               body: ConsentRequest  → CandidateState
 // PUT  /api/candidate/:token/answer                body: SaveAnswer      → SavedAnswer
 //        409 unless the question at `position` is presented now or was presented earlier.
+//        v1.1: 409 {reason: 'time_up'} once serverNow > sectionEndsAt + 15 s.
 // POST /api/candidate/:token/recordings            body: StartRecording  → StartedRecording
 //        409 unless consent was given; allowed while the session is ready or live.
 // PUT  /api/candidate/:token/recordings/:segmentId/chunks/:seq   raw bytes → ChunkAck
@@ -507,6 +526,8 @@ export interface CandidateState {
   recording: CandidateRecording;
   /** v1. The candidate's own answer for the presented question; null outside phase 'question'. */
   answer: CandidateAnswer | null;
+  /** v1.1: section countdown target (same as Session.sectionEndsAt). Answers lock after it. */
+  sectionEndsAt: string | null;
 }
 
 // GET /api/health → { ok: true }   (unauthenticated)

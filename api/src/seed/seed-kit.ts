@@ -6,7 +6,7 @@
  *   content and section fields but PRESERVES the existing bands (thresholds are edited in-app).
  */
 import { readFileSync } from 'node:fs';
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import type { KitSeed, QuestionSeed, SectionSeed } from '../contracts/kit-seed';
 
 export class KitSeedError extends Error {}
@@ -174,9 +174,10 @@ function questionData(q: QuestionSeed) {
     rubric: (q.rubric ?? undefined) as object | undefined,
     trapOrBonus: q.trapOrBonus ?? null,
     whatGoodLooksLike: q.whatGoodLooksLike ?? null,
-    choices: (q.choices ?? undefined) as object | undefined,
+    // v1.2: DbNull so a --force re-seed clears stale values when a question stops being mcq/market.
+    choices: q.choices ? (q.choices as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
     correctChoice: q.correctChoice ?? null,
-    market: (q.market ?? undefined) as object | undefined,
+    market: q.market ? (q.market as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
   };
 }
 

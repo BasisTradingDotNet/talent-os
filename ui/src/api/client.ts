@@ -26,12 +26,28 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     message: string,
-    /** Parsed JSON body when the server sent one (e.g. `{ expected }` on a chunk 409). */
+    /** Parsed JSON body when the server sent one (e.g. `{ expected }` / `{ reason }` on a 409). */
     public readonly data: unknown = undefined,
+    /** From a 429's Retry-After header (seconds or HTTP date), in ms. */
+    public readonly retryAfterMs: number | undefined = undefined,
   ) {
     super(message);
     this.name = 'ApiError';
   }
+  /** `reason` of a 409 body, e.g. 'time_up' | 'not_presented' | 'not_live' | 'consent_required'. */
+  get reason(): string | undefined {
+    const r = (this.data as { reason?: unknown } | undefined)?.reason;
+    return typeof r === 'string' ? r : undefined;
+  }
+}
+
+function retryAfterMs(res: Response): number | undefined {
+  const h = res.headers.get('Retry-After');
+  if (!h) return undefined;
+  const secs = Number(h);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const at = Date.parse(h);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
 }
 
 /** One typed function per endpoint in api/src/contracts/api.ts. */
@@ -83,7 +99,7 @@ async function parseError(method: string, path: string, res: Response): Promise<
   } catch {
     /* not JSON */
   }
-  return new ApiError(res.status, message, data);
+  return new ApiError(res.status, message, data, res.status === 429 ? (retryAfterMs(res) ?? 1000) : undefined);
 }
 
 async function request<T>(method: string, path: string, body?: unknown, keepalive = false): Promise<T> {

@@ -112,8 +112,10 @@ class SegmentUploader {
           }
           this.error = e instanceof Error ? e.message : 'upload failed';
           this.onChange();
-          await new Promise((r) => setTimeout(r, this.backoff));
-          this.backoff = Math.min(BACKOFF_MAX, this.backoff * 2);
+          // 429: honour Retry-After without growing the backoff; anything else backs off 1 s → 30 s.
+          const wait = e instanceof ApiError && e.status === 429 ? Math.max(250, e.retryAfterMs ?? 1000) : this.backoff;
+          await new Promise((r) => setTimeout(r, wait));
+          if (!(e instanceof ApiError && e.status === 429)) this.backoff = Math.min(BACKOFF_MAX, this.backoff * 2);
         }
       }
       if (this.finalRequested) {
@@ -123,7 +125,7 @@ class SegmentUploader {
             break;
           } catch (e) {
             if (e instanceof ApiError && e.status < 500 && e.status !== 429) break;
-            await new Promise((r) => setTimeout(r, this.backoff));
+            await new Promise((r) => setTimeout(r, e instanceof ApiError && e.status === 429 ? Math.max(250, e.retryAfterMs ?? 1000) : this.backoff));
             this.backoff = Math.min(BACKOFF_MAX, this.backoff * 2);
           }
         }

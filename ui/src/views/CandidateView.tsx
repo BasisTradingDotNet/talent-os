@@ -39,6 +39,7 @@ function useCandidateState(token: string) {
     let timer: number | undefined;
     const poll = async () => {
       const fetchTime = Date.now();
+      let wait = 1000;
       try {
         const state = await api().getCandidateState(token);
         if (cancelled) return;
@@ -48,8 +49,9 @@ function useCandidateState(token: string) {
         if (cancelled) return;
         if (e instanceof ApiError && e.status === 404) setStatus('notfound');
         else setStatus((s) => (s === 'ok' ? 'ok' : 'error'));
+        if (e instanceof ApiError && e.status === 429) wait = Math.max(1000, e.retryAfterMs ?? 1000);
       } finally {
-        if (!cancelled) timer = window.setTimeout(poll, 1000);
+        if (!cancelled) timer = window.setTimeout(poll, wait);
       }
     };
     void poll();
@@ -390,14 +392,17 @@ function AnswerBox({
       setSavedAt(r.savedAt);
       setStatus('saved');
     } catch (e) {
-      const reason = e instanceof ApiError && e.status === 409 ? (e.data as { reason?: string } | undefined)?.reason : undefined;
-      if (reason === 'time_up') {
+      const api409 = e instanceof ApiError && e.status === 409;
+      if (api409 && e.reason === 'time_up') {
         setStatus('timeup');
       } else {
         if (pending.current === null) pending.current = value;
         setStatus('error');
         retries.current += 1;
-        timer.current = window.setTimeout(() => void flush(), Math.min(10_000, 1000 * 2 ** Math.min(retries.current, 4)));
+        // 429: wait out Retry-After. Other 409s (not_live, not_presented, consent_required) will not
+        // succeed by themselves: keep the text pending and retry on the next edit or blur only.
+        if (e instanceof ApiError && e.status === 429) timer.current = window.setTimeout(() => void flush(), Math.max(500, e.retryAfterMs ?? 1000));
+        else if (!api409) timer.current = window.setTimeout(() => void flush(), Math.min(10_000, 1000 * 2 ** Math.min(retries.current, 4)));
       }
     } finally {
       inflight.current = false;

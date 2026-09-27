@@ -154,12 +154,16 @@ describe('talent-os API (e2e)', () => {
     expect(detail.latest.A).toMatchObject({ status: 'completed', trapsNoticed: 1, superseded: false });
     expect(detail.latest.A.verdict!.result).toBe('Pass — progress');
 
-    // Re-sit: the old session is retained and marked superseded.
-    await http.post('/api/sessions').set(AUTH).send({ candidateId: candidate.id, section: 'A' }).expect(201);
-    const resat = (await http.get(`/api/candidates/${candidate.id}`).set(AUTH).expect(200)).body as CandidateDetail;
+    // Re-sit: an unused new link doesn't displace the result; once it runs, the old one is superseded.
+    const resit = (await http.post('/api/sessions').set(AUTH).send({ candidateId: candidate.id, section: 'A' }).expect(201)).body as Session;
+    let resat = (await http.get(`/api/candidates/${candidate.id}`).set(AUTH).expect(200)).body as CandidateDetail;
     expect(resat.sessions).toHaveLength(2);
+    expect(resat.sessions[1].superseded).toBe(false);
+    expect(resat.latest.A.status).toBe('completed');
+    await http.post(`/api/sessions/${resit.id}/start`).set(AUTH).expect(201);
+    resat = (await http.get(`/api/candidates/${candidate.id}`).set(AUTH).expect(200)).body as CandidateDetail;
     expect(resat.sessions[1].superseded).toBe(true);
-    expect(resat.latest.A.status).toBe('ready');
+    expect(resat.latest.A.status).toBe('live');
 
     const list = (await http.get('/api/candidates').set(AUTH).expect(200)).body as CandidateDetail[];
     expect(list.map((c) => c.id)).toContain(candidate.id);

@@ -186,10 +186,15 @@ describe('cancel link (e2e)', () => {
     expect(detail.latest.A).toMatchObject({ id: done.id, status: 'completed', superseded: false });
     expect(detail.stageReached).toBe(2);
 
-    // A real re-sit still supersedes the completed one; the cancelled row stays as it is.
+    // A re-sit link doesn't displace the result until it runs; then it supersedes the completed
+    // one. The cancelled row stays as it is.
     const { session: resit } = await newSession(c.id);
-    const again = (await http.get(`/api/candidates/${c.id}`).set(AUTH).expect(200)).body as CandidateDetail;
-    expect(again.latest.A).toMatchObject({ id: resit.id, status: 'ready' });
+    let again = (await http.get(`/api/candidates/${c.id}`).set(AUTH).expect(200)).body as CandidateDetail;
+    expect(again.latest.A).toMatchObject({ id: done.id, status: 'completed' });
+    expect(again.sessions.find((x) => x.id === done.id)!.superseded).toBe(false);
+    await http.post(`/api/sessions/${resit.id}/start`).set(AUTH).expect(201);
+    again = (await http.get(`/api/candidates/${c.id}`).set(AUTH).expect(200)).body as CandidateDetail;
+    expect(again.latest.A).toMatchObject({ id: resit.id, status: 'live' });
     expect(again.sessions.find((x) => x.id === done.id)!.superseded).toBe(true);
     expect(again.sessions.find((x) => x.id === voided.id)!.superseded).toBe(false);
 
@@ -210,7 +215,7 @@ describe('cancel link (e2e)', () => {
     expect(cells[header.indexOf('A_total')]).toBe('');
     expect(cells[header.indexOf('A_result')]).toBe('');
     const scorecard = JSON.parse((await http.get(`/api/export/candidates/${c.id}.json`).set(AUTH).expect(200)).text) as CandidateScorecard;
-    expect(scorecard.sessions.map((x) => x.status).sort()).toEqual(['cancelled', 'completed', 'ready']);
+    expect(scorecard.sessions.map((x) => x.status).sort()).toEqual(['cancelled', 'completed', 'live']);
     expect(scorecard.sessions.find((x) => x.id === voided.id)).toMatchObject({ status: 'cancelled', startedAt: null });
     expect(scorecard.candidate.latest.A.id).toBe(resit.id);
   });

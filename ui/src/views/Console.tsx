@@ -46,6 +46,9 @@ const EMPTY_RESPONSE = (key: string): ResponseRecord => ({
   markedForReturn: false,
   timeSpentSeconds: 0,
   updatedAt: '',
+  candidateAnswer: null,
+  candidateAnswerAt: null,
+  firstPresentedAt: null,
 });
 
 type Reveal = { modelAnswer: boolean; rubric: boolean; trap: boolean; good: boolean };

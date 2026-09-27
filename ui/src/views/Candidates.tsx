@@ -127,7 +127,7 @@ export function Candidates() {
 function SectionCell({ c, s }: { c: CandidateSummary; s: SectionDef }) {
   const ss = c.latest[s.key];
   if (!ss) return <span className="text-slate-300">—</span>;
-  if (s.scoring === 'rubric') {
+  if (s.scoring === 'rubric' || s.scoring === 'auto') {
     const v = ss.verdict;
     return (
       <div className="space-y-0.5 text-xs">
@@ -137,9 +137,11 @@ function SectionCell({ c, s }: { c: CandidateSummary; s: SectionDef }) {
             {t.label} {fmtScore(t.total)}/{t.max}
           </div>
         ))}
-        <div className="text-slate-600">
-          traps {ss.trapsNoticed} · bonuses {ss.bonusesGiven}
-        </div>
+        {s.scoring === 'rubric' && (
+          <div className="text-slate-600">
+            traps {ss.trapsNoticed} · bonuses {ss.bonusesGiven}
+          </div>
+        )}
         <RecordedBadge ss={ss} />
         {v?.complete ? <ResultChip verdict={v} /> : <span className="chip bg-slate-100 text-slate-600">{ss.status}</span>}
       </div>

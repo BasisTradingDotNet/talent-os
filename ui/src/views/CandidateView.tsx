@@ -5,6 +5,8 @@
  *
  * v1: consent → devices (camera + mic, entire screen) → chunked upload while the interviewer
  * drives the session; the candidate types answers here. Nothing is recorded before consent.
+ * v1.2: multiple-choice questions (choice cards, saved on click) and self-paced sections, where the
+ * candidate starts, navigates and submits on their own within the section time limit.
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useParams } from 'react-router-dom';
@@ -623,14 +625,14 @@ function ChoiceList({
               disabled={locked}
               onClick={() => !locked && onChange(on ? i : i)}
               className={`flex w-full items-start gap-4 rounded-lg border-2 px-4 py-3 text-left text-lg transition ${
-                on ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white hover:border-slate-500'
+                on ? 'border-slate-900 bg-slate-100 ring-2 ring-slate-900' : 'border-slate-300 bg-white hover:border-slate-500'
               } ${locked ? 'cursor-default opacity-80' : ''}`}
               data-testid={`choice-${i}`}
             >
-              <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 text-sm font-semibold ${on ? 'border-white bg-white text-slate-900' : 'border-slate-400 text-slate-600'}`}>
+              <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 text-sm font-semibold ${on ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-400 text-slate-600'}`}>
                 {String.fromCharCode(65 + i)}
               </span>
-              <Markdown text={opt} className={`min-w-0 flex-1 text-lg ${on ? 'text-white' : ''}`} />
+              <Markdown text={opt} className="min-w-0 flex-1 text-lg" />
             </button>
           );
         })}

@@ -33,6 +33,9 @@ const CONSENT_TEXT =
 
 const FLAG_TYPES = new Set(['tab_hidden', 'window_blur', 'paste', 'screen_share_stopped', 'camera_stopped']);
 
+/** Candidates see the candidate brand, never the internal org name (mirrors the API's CANDIDATE_BRAND). */
+const CANDIDATE_BRAND = 'BTNET';
+
 interface CandidateRow {
   id: string;
   applicationId: string;
@@ -740,7 +743,7 @@ export async function createMockClient(): Promise<ApiClient> {
         .filter((p) => p > 0);
       const instructions = sec.candidateInstructions ?? (sec.showInstructions ? store.kit.candidateInstructions : null);
       const base = {
-        orgName: store.orgName,
+        orgName: CANDIDATE_BRAND,
         sectionLabel: sec.candidateLabel,
         serverNow: nowIso(),
         version: row.version,

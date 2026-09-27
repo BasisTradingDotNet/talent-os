@@ -11,6 +11,7 @@ the public candidate payload contains only allowlisted keys and none of the kit'
 point of the script.
 """
 import json
+import re
 import os
 import sys
 import urllib.error
@@ -170,7 +171,7 @@ def main():
             call("POST", f"/api/sessions/{sid}/present", {"questionKey": qk}, expect=201)
             st = call("GET", f"/api/candidate/{token}/state", auth=False)
             blob = json.dumps(st)
-            leaked = [s[:40] for s in secrets if s in blob]
+            leaked = [s[:40] for s in secrets if s in blob] + (["G-20"] if re.search(r"G-?20", blob, re.I) else [])
             ok = (
                 set(st) == STATE_KEYS
                 and st["phase"] == "question"

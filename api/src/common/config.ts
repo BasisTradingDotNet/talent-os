@@ -19,6 +19,11 @@ export function cfg() {
     activeKitSlug: env.ACTIVE_KIT_SLUG || null,
     /** v1: where candidate recordings are stored (a volume in production). Absolute. */
     recordingsDir: resolve(env.RECORDINGS_DIR || 'recordings'),
+    /**
+     * The name candidates see (page header, consent notice) when it must differ from the internal
+     * org name — e.g. hiring under the BTNET brand without disclosing the parent group.
+     */
+    candidateBrand: (env.CANDIDATE_BRAND ?? '').trim() || null,
     /** v1: recordings are deleted this many days after the hiring decision. */
     recordingRetentionDays: int(env.RECORDING_RETENTION_DAYS, 90),
     /** v1: per-token rate limit on /api/candidate/* (token bucket). */

@@ -30,6 +30,8 @@ services:
       PORT: 4310
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8170}
       DEFAULT_ORG_SLUG: ${DEFAULT_ORG_SLUG:-g20}
+      # Name shown to candidates (page header, recording consent). The parent group is not disclosed.
+      CANDIDATE_BRAND: ${CANDIDATE_BRAND:-BTNET}
       # Local-only fallback identity. Leave empty in production: Cloudflare Access supplies it.
       DEV_USER_EMAIL: ${DEV_USER_EMAIL:-}
       # Optional defence in depth: verify the Cf-Access-Jwt-Assertion header when both are set.

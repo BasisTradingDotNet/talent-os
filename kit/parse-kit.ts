@@ -117,8 +117,8 @@ function stage2Set(key: string, label: string, candidateLabel: string, timeMinut
 export const QUANT_TRADER_PROFILE: KitProfile = {
   slug: 'quant-trader',
   version: '1.0',
-  title: 'Quant Trader Interview Kit — Basis Trading Desk, G-20 Group',
-  orgName: 'G-20 Group',
+  title: 'Quant Trader Interview Kit — Basis Trading Desk, BTNET',
+  orgName: 'BTNET',
   job: { title: 'Quant Trader — Basis Trading Desk', location: 'India, remote' },
   instructionsHeading: '5.0',
   dimensionsHeading: '3.4',

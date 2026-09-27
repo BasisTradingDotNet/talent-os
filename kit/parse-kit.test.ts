@@ -57,7 +57,7 @@ test('kit header, instructions and dimensions', () => {
   assert.equal(seed.slug, 'sample');
   assert.equal(seed.version, '0.1');
   assert.equal(seed.title, 'Sample Interview Kit (synthetic)');
-  assert.equal(seed.orgName, 'G-20 Group');
+  assert.equal(seed.orgName, 'BTNET');
   assert.equal(
     seed.candidateInstructions,
     'Use a spreadsheet for anything numerical and talk through your reasoning. Ask if anything is unclear.',

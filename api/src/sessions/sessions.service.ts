@@ -237,7 +237,6 @@ export class SessionsService {
       create: { ...(data as Prisma.ResponseUncheckedCreateInput), sessionId: id, questionKey },
       update: data,
     });
-    await this.prisma.session.update({ where: { id }, data: { version: { increment: 1 } } });
     return this.present_(orgId, id);
   }
 

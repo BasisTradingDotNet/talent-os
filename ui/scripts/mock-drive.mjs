@@ -14,6 +14,8 @@
 import { chromium } from 'playwright-core';
 const EXE = process.env.CHROME_PATH;
 const BASE = process.env.UI_URL ?? 'http://127.0.0.1:5174';
+/** API_MODE=1: the UI proxies to a real API (opaque ids, no mock store to rewind for the time-up check). */
+const API_MODE = process.env.API_MODE === '1';
 const SHOT = (name) => `/tmp/talent-os-rec-${name}.png`;
 const fails = [];
 const check = (cond, msg) => { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!cond) fails.push(msg); };
@@ -36,14 +38,14 @@ await page.evaluate(() => localStorage.clear());
 await page.reload();
 await page.getByTestId('new-name').fill('Test Candidate');
 await page.getByTestId('create-candidate').click();
-await page.waitForURL(/\/candidates\/c\d+$/);
+await page.waitForURL(API_MODE ? /\/candidates\/[^/]+$/ : /\/candidates\/c\d+$/);
 check(true, 'candidate created → profile ' + page.url());
 check(await page.getByTestId('record-A').isChecked(), 'Record checkbox defaults ON for Set A (candidate view)');
 check(!(await page.getByTestId('record-S1').isChecked()), 'Record checkbox defaults OFF for S1 (no candidate view)');
 await page.screenshot({ path: SHOT('profile') });
 
 await page.getByTestId('start-A').click();
-await page.waitForURL(/\/sessions\/s\d+$/);
+await page.waitForURL(API_MODE ? /\/sessions\/[^/]+$/ : /\/sessions\/s\d+$/);
 const sessionId = page.url().split('/').pop();
 check(true, 'session created → console ' + page.url());
 check((await page.getByTestId('chip-consent').innerText()).includes('pending'), 'console shows Consent pending before the candidate accepts');
@@ -52,7 +54,7 @@ await page.getByTestId('end').waitFor();
 check(await page.locator('.chip', { hasText: 'live' }).first().isVisible(), 'status chip live');
 check(await page.getByTestId('section-countdown').isVisible(), 'console shows the section countdown');
 const url = await page.getByTestId('candidate-url').inputValue();
-check(/\/c\/tok-/.test(url), 'candidate url ' + url);
+check(API_MODE ? /\/c\/.+/.test(url) : /\/c\/tok-/.test(url), 'candidate url ' + url);
 
 // ---- candidate: consent → devices → recording ---------------------------------------------------
 const cpage = await ctx.newPage();
@@ -171,6 +173,11 @@ await cpage.getByText('Question 1 of 4').waitFor({ timeout: 5000 });
 check((await cpage.getByTestId('answer-text').inputValue()).includes('stdev = 0.114%'), 'returning to A1 restores the saved answer');
 
 // ---- time-up lock and +5 min extension (mock: rewind startedAt) --------------------------------
+if (API_MODE) {
+  await page.getByTestId('extend').click();
+  await page.getByTestId('extend').filter({ hasText: '+5' }).waitFor({ timeout: 6000 });
+  check(true, 'API mode: +5 min extension applied (time-up rewind is mock-only)');
+} else {
 await page.evaluate((id) => {
   const s = JSON.parse(localStorage.getItem('talent-os-mock-v1'));
   const row = s.sessions.find((x) => x.id === id);
@@ -189,6 +196,7 @@ await page.getByTestId('extend').click();
 await cpage.getByTestId('time-up').waitFor({ state: 'hidden', timeout: 6000 });
 check(!(await cpage.getByTestId('answer-text').evaluate((el) => el.readOnly)), '+5 min → answer box unlocked');
 check((await page.getByTestId('extend').innerText()).includes('+5'), 'console shows the extension');
+}
 
 // Score all: A1=3, A2=2, A3=3, A4=1 → 9/12, band min 9
 const scores = { A1: 3, A2: 2, A3: 3, A4: 1 };
@@ -250,7 +258,7 @@ const candUrl = (await page.locator('a', { hasText: 'Test Candidate' }).first().
 await page.goto(BASE + candUrl);
 check((await page.getByTestId('recorded-badge').first().innerText()).includes('rec'), 'profile shows the recorded badge for Set A');
 await page.getByTestId('start-S1').click();
-await page.waitForURL(/\/sessions\/s\d+$/);
+await page.waitForURL(API_MODE ? /\/sessions\/[^/]+$/ : /\/sessions\/s\d+$/);
 await page.getByTestId('start').click();
 await page.getByTestId('end').waitFor();
 check((await page.getByTestId('score-3').count()) === 0, 'S1 has no 0-3 score buttons');

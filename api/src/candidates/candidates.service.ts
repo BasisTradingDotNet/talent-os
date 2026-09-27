@@ -30,10 +30,14 @@ export class CandidatesService {
     let stageReached = 0;
     for (const row of rows) {
       const kit = await cache.get(row.kitId);
-      const superseded = seen.has(row.section);
-      seen.add(row.section);
+      // v1.3: a cancelled session never ran. It is listed, but it is neither the section's latest
+      // result nor does it supersede an older real one, and it does not count towards the stage.
+      const cancelled = row.status === 'cancelled';
+      const superseded = !cancelled && seen.has(row.section);
+      if (!cancelled) seen.add(row.section);
       const summary = toSummary(row, kit, superseded);
       sessions.push(summary);
+      if (cancelled) continue;
       if (!superseded) latest[row.section] = summary;
       const stage = kit.sections.find((s) => s.key === row.section)?.stage ?? 0;
       if (stage > stageReached) stageReached = stage;

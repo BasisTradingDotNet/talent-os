@@ -64,6 +64,17 @@ class SegmentUploader {
     return this.whenFinished();
   }
 
+  /** v1.3: the link is dead. Drop every pending chunk, never talk to the server again. */
+  abort() {
+    this.queue = [];
+    this.finalRequested = false;
+    this.recorderActive = false;
+    this.finished = true;
+    for (const w of this.waiters) w();
+    this.waiters = [];
+    this.onChange();
+  }
+
   /** Resolves once the segment is drained and stopped server-side. */
   whenFinished(): Promise<void> {
     if (this.finished) return Promise.resolve();
@@ -302,6 +313,31 @@ export class RecordingController {
     await Promise.all(this.uploaders.map((u) => u.whenFinished()));
     window.clearTimeout(grace);
     this.emit({ stopping: false });
+  }
+
+  /**
+   * v1.3: the link stopped being valid (the interviewer cancelled it). Stop recorders and tracks,
+   * drop every pending chunk and make no further request. Idempotent; stopAll() afterwards is a no-op.
+   */
+  abort(): void {
+    this.stopped = true;
+    for (const kind of ['camera', 'screen'] as RecordingStream[]) {
+      const entry = this.active[kind];
+      if (!entry) continue;
+      delete this.active[kind];
+      try {
+        if (entry.recorder) {
+          entry.recorder.ondataavailable = null;
+          entry.recorder.onstop = null;
+          if (entry.recorder.state !== 'inactive') entry.recorder.stop();
+        }
+      } catch {
+        /* already stopped */
+      }
+      for (const t of entry.stream.getTracks()) t.stop();
+    }
+    for (const u of this.uploaders) u.abort();
+    this.emit({ camera: 'none', screen: 'none', recording: false, stopping: false });
   }
 
   /** True while the page should warn before unload. */

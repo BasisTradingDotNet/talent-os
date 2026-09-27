@@ -1,6 +1,7 @@
 import {
   ArrowLeft,
   ArrowRight,
+  Ban,
   Bookmark,
   Check,
   ChevronLeft,
@@ -98,6 +99,8 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
   const startMut = useSessionMutation(session.id, () => api().startSession(session.id));
   const endMut = useSessionMutation(session.id, () => api().endSession(session.id));
   const reopenMut = useSessionMutation(session.id, () => api().reopenSession(session.id));
+  /** v1.3: void a link that was never used. */
+  const cancelMut = useSessionMutation(session.id, () => api().cancelSession(session.id));
   const presentMut = useSessionMutation(session.id, (key: string | null) => api().presentQuestion(session.id, { questionKey: key }));
   const respMut = useSessionMutation(session.id, (a: { key: string; body: UpdateResponse }) =>
     api().updateResponse(session.id, a.key, a.body),
@@ -204,7 +207,7 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
           {verdict && <RunningTotal verdict={verdict} />}
           {verdict?.complete && <ResultChip verdict={verdict} />}
           {session.sectionEndsAt && session.status !== 'completed' && <SectionCountdown endsAt={session.sectionEndsAt} offset={offset} />}
-          {session.status !== 'completed' && section.timeMinutes !== null && (
+          {(session.status === 'ready' || session.status === 'live') && section.timeMinutes !== null && (
             <button className="btn btn-sm" onClick={() => extendMut.mutate(5)} disabled={extendMut.isPending} title="Add 5 minutes to the section time limit" data-testid="extend">
               <Plus size={12} /> 5 min{session.extensionMinutes > 0 ? ` (+${session.extensionMinutes})` : ''}
             </button>
@@ -239,9 +242,27 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
                 <RotateCcw size={14} /> Reopen
               </button>
             )}
+            {session.status === 'ready' && (
+              <button
+                className="btn"
+                onClick={() => {
+                  if (window.confirm('Cancel this link? The candidate will see that it is no longer valid.')) cancelMut.mutate();
+                }}
+                disabled={cancelMut.isPending}
+                title="Void this candidate link. Only a session that has not started can be cancelled."
+                data-testid="cancel-link"
+              >
+                <Ban size={14} /> Cancel link
+              </button>
+            )}
           </div>
         </div>
-        {section.candidateView && session.candidateUrl && (
+        {session.status === 'cancelled' && (
+          <p className="mt-2 text-sm text-slate-500" data-testid="cancelled-note">
+            Link cancelled{session.endedAt ? ` ${fmtDate(session.endedAt)}` : ''}. The candidate sees that it is no longer valid; any device-check footage was deleted.
+          </p>
+        )}
+        {section.candidateView && session.candidateUrl && session.status !== 'cancelled' && (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
             <span className="text-slate-500">Candidate link</span>
             <input className="input w-[28rem] max-w-full font-mono text-xs" readOnly value={session.candidateUrl} data-testid="candidate-url" onFocus={(e) => e.currentTarget.select()} />
@@ -251,9 +272,9 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
             </button>
           </div>
         )}
-        {(startMut.error || endMut.error || presentMut.error || respMut.error || ratingMut.error || patchMut.error || extendMut.error) && (
+        {(startMut.error || endMut.error || presentMut.error || respMut.error || ratingMut.error || patchMut.error || extendMut.error || cancelMut.error) && (
           <p className="mt-2 text-sm text-red-700">
-            {(startMut.error ?? endMut.error ?? presentMut.error ?? respMut.error ?? ratingMut.error ?? patchMut.error ?? extendMut.error)?.message}
+            {(startMut.error ?? endMut.error ?? presentMut.error ?? respMut.error ?? ratingMut.error ?? patchMut.error ?? extendMut.error ?? cancelMut.error)?.message}
           </p>
         )}
       </div>
@@ -426,8 +447,19 @@ function NavStatus({ r, rubric, inverted }: { r: ResponseRecord | undefined; rub
 }
 
 export function StatusChip({ status }: { status: Session['status'] }) {
-  const cls = status === 'live' ? 'bg-emerald-100 text-emerald-800' : status === 'completed' ? 'bg-slate-200 text-slate-700' : 'bg-sky-100 text-sky-800';
-  return <span className={`chip ${cls}`}>{status}</span>;
+  const cls =
+    status === 'live'
+      ? 'bg-emerald-100 text-emerald-800'
+      : status === 'completed'
+        ? 'bg-slate-200 text-slate-700'
+        : status === 'cancelled'
+          ? 'bg-slate-100 text-slate-500' // v1.3: grey — the link was voided before it started
+          : 'bg-sky-100 text-sky-800';
+  return (
+    <span className={`chip ${cls}`} data-testid={`status-${status}`}>
+      {status}
+    </span>
+  );
 }
 
 export function RunningTotal({ verdict }: { verdict: Verdict }) {
@@ -886,7 +918,7 @@ function streamState(seg: RecordingSegment | null, nowServer: number): StreamSta
 }
 
 function RecordingChips({ session, offset, onFlags }: { session: Session; offset: number; onFlags: () => void }) {
-  const now = useTick(session.status !== 'completed');
+  const now = useTick(session.status === 'ready' || session.status === 'live');
   const nowServer = now + offset;
   const rec = session.recording;
   const flags = countFlags(session.events);
@@ -993,7 +1025,7 @@ function RecordingsPanel({ session, offset, jump }: { session: Session; offset: 
   const segs = session.recording.segments;
   const [selected, setSelected] = useState<Record<RecordingStream, string | null>>({ camera: null, screen: null });
   const [seekTo, setSeekTo] = useState<Record<RecordingStream, number | null>>({ camera: null, screen: null });
-  const now = useTick(session.status !== 'completed');
+  const now = useTick(session.status === 'ready' || session.status === 'live');
 
   // "Jump to this question": pick the segment covering firstPresentedAt per stream, seek within it.
   useEffect(() => {

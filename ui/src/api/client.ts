@@ -71,6 +71,8 @@ export interface ApiClient {
   reopenSession(id: string): Promise<Session>;
   /** v1.1: add minutes to the section time limit (ready or live). */
   extendSession(id: string, body: ExtendSession): Promise<Session>;
+  /** v1.3: void a session that has not started (ready → cancelled); its link then answers 404. */
+  cancelSession(id: string): Promise<Session>;
   // Candidates
   listCandidates(): Promise<CandidateSummary[]>;
   createCandidate(body: CreateCandidate): Promise<CandidateDetail>;
@@ -151,6 +153,7 @@ export const httpClient: ApiClient = {
   endSession: (id) => request('POST', `/sessions/${enc(id)}/end`),
   reopenSession: (id) => request('POST', `/sessions/${enc(id)}/reopen`),
   extendSession: (id, body) => request('POST', `/sessions/${enc(id)}/extend`, body),
+  cancelSession: (id) => request('POST', `/sessions/${enc(id)}/cancel`),
   listCandidates: () => request('GET', '/candidates'),
   createCandidate: (body) => request('POST', '/candidates', body),
   getCandidate: (id) => request('GET', `/candidates/${enc(id)}`),

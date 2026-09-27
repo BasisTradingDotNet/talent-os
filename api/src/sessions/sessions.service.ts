@@ -21,6 +21,7 @@ import { bad } from '../common/validate';
 import { KitService, LoadedKit } from '../kit/kit.service';
 import { MarketService } from '../market/market.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RecordingsService } from '../recordings/recordings.service';
 import { sectionEndsAt } from './timing';
 import { makeSessionOrders } from './ordering';
 import { computeAutoVerdict, computeVerdict, elapsedSeconds } from './verdict';
@@ -281,6 +282,11 @@ function selfPaced(): never {
   throw new ConflictException({ statusCode: 409, message: 'self-paced section: the candidate drives', reason: 'self_paced' });
 }
 
+/** v1.3: only a session that never started can be cancelled. */
+function notReady(status: string): never {
+  throw new ConflictException({ statusCode: 409, message: `cannot cancel: session is ${status}`, reason: 'not_ready' });
+}
+
 @Injectable()
 export class SessionsService {
   private readonly logger = new Logger(SessionsService.name);
@@ -289,9 +295,13 @@ export class SessionsService {
     private readonly prisma: PrismaService,
     private readonly kits: KitService,
     private readonly market: MarketService,
+    private readonly recordings: RecordingsService,
   ) {}
 
-  /** v1.2: completes self-paced live sessions once sectionEndsAt + 60 s has passed. Runs every minute. */
+  /**
+   * v1.2: completes self-paced live sessions once sectionEndsAt + 60 s has passed. Runs every minute.
+   * Only `live` rows qualify, so cancelled sessions (v1.3, never started) are never touched.
+   */
   @Cron(CronExpression.EVERY_MINUTE)
   async completeExpiredSelfPaced(now = new Date()): Promise<number> {
     const live = await this.prisma.session.findMany({
@@ -398,7 +408,7 @@ export class SessionsService {
 
   async present(orgId: string, id: string, questionKey: string | null): Promise<Session> {
     const row = await this.row(orgId, id);
-    if (row.status === 'completed') throw new ConflictException('session is completed');
+    if (row.status === 'completed' || row.status === 'cancelled') throw new ConflictException(`session is ${row.status}`);
     const kit = await this.kits.kitById(orgId, row.kitId);
     const ctx = sectionContext(kit, row.section);
     if (ctx.section.selfPaced) selfPaced();
@@ -466,8 +476,29 @@ export class SessionsService {
   async end(orgId: string, id: string): Promise<Session> {
     const row = await this.row(orgId, id);
     if (row.status === 'completed') throw new ConflictException('session already completed');
+    if (row.status === 'cancelled') throw new ConflictException('session is cancelled');
     const now = new Date();
     await this.prisma.$transaction((tx) => applyEnd(tx, row, now));
+    return this.present_(orgId, id);
+  }
+
+  /**
+   * v1.3: voids a session that never started (ready → cancelled). From now on its candidate link
+   * answers 404 like an unknown token, and any footage uploaded during the device check is
+   * deleted — it has no purpose. Final: a cancelled session cannot be started, ended or reopened.
+   */
+  async cancel(orgId: string, id: string): Promise<Session> {
+    const row = await this.row(orgId, id);
+    if (row.status !== 'ready') notReady(row.status);
+    const now = new Date();
+    // Conditional update: a self-paced candidate may press Start in the same instant.
+    const r = await this.prisma.session.updateMany({
+      where: { id, status: 'ready' },
+      data: { status: 'cancelled', endedAt: now, version: { increment: 1 } },
+    });
+    if (r.count === 0) notReady('no longer ready');
+    await this.recordings.deleteForSession(id, now);
+    this.logger.log(`session ${id} cancelled`);
     return this.present_(orgId, id);
   }
 

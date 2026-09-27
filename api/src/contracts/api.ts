@@ -13,6 +13,8 @@
  * any interviewer extensions; when it runs out the candidate's answers lock (15 s grace for the
  * final autosave). The interviewer ends the session; recording continues until then.
  *
+ * v1.3 (2026-09-27): cancel an unused candidate link (SessionStatus 'cancelled').
+ *
  * v1.2 (2026-09-27): multiple-choice (auto-scored, negative marking) and self-paced sections —
  * the candidate starts, navigates and submits within the time limit — plus local transcription of
  * recordings with AI-drafted interviewer notes (whisper.cpp + a local model; never a score).
@@ -191,7 +193,8 @@ export interface Me {
 // Sessions
 // ---------------------------------------------------------------------------------------------
 
-export type SessionStatus = 'ready' | 'live' | 'completed';
+/** v1.3: 'cancelled' = the interviewer voided a session that never started; its link is dead (404). */
+export type SessionStatus = 'ready' | 'live' | 'completed' | 'cancelled';
 
 export interface ResponseRecord {
   questionKey: string;
@@ -520,6 +523,9 @@ export interface IntegrityEvent {
 // POST  /api/sessions/:id/end                                           → Session   (→ completed)
 // POST  /api/sessions/:id/reopen                                        → Session   (completed → live)
 // POST  /api/sessions/:id/extend                  body: ExtendSession   → Session   (v1.1; ready or live)
+// POST  /api/sessions/:id/cancel                                        → Session   (v1.3; ready → cancelled,
+//                                                   409 otherwise). Every candidate endpoint then answers 404
+//                                                   for its token, exactly like an unknown token.
 // v1.2: /start and /present return 409 {reason:'self_paced'} for self-paced sections — the candidate drives.
 // GET   /api/sessions/:id/recordings/:segmentId   → the media file (Content-Type = segment mimeType),
 //                                                   HTTP Range supported for seeking. PROTECTED.

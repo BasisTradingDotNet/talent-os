@@ -292,6 +292,54 @@ await page.screenshot({ path: SHOT('scorecard'), fullPage: true });
 await page.goto(BASE + '/settings');
 await page.getByText('Set A — Easy (screening)').waitFor();
 
+// ---- v1.3: cancel an unused link (works in mock and API mode) -------------------------------------
+{
+  const SHOT13 = (name) => `/tmp/talent-os-v13-${name}.png`;
+  await page.goto(BASE + candUrl);
+  await page.getByTestId('start-A').click(); // a NEWER Set A session that will never start
+  await page.waitForURL(API_MODE ? /\/sessions\/[^/]+$/ : /\/sessions\/s\d+$/);
+  await page.getByTestId('cancel-link').waitFor();
+  check(true, 'console shows "Cancel link" for a ready session');
+  const cancelUrl = await page.getByTestId('candidate-url').inputValue();
+  await cpage.goto(cancelUrl);
+  await cpage.getByTestId('consent').waitFor();
+  check(true, 'candidate opened the new link (valid: consent step)');
+  page.once('dialog', (d) => {
+    check(d.message() === 'Cancel this link? The candidate will see that it is no longer valid.', 'cancel confirm text: ' + d.message());
+    d.accept();
+  });
+  await page.getByTestId('cancel-link').click();
+  await page.getByTestId('status-cancelled').waitFor();
+  check(
+    (await page.getByTestId('start').count()) === 0 &&
+      (await page.getByTestId('end').count()) === 0 &&
+      (await page.getByRole('button', { name: 'Reopen' }).count()) === 0 &&
+      (await page.getByTestId('extend').count()) === 0 &&
+      (await page.getByTestId('cancel-link').count()) === 0,
+    'cancelled: no Start / End / Reopen / +5 min / Cancel controls',
+  );
+  check((await page.getByTestId('candidate-url').count()) === 0 && (await page.getByTestId('cancelled-note').count()) === 1, 'cancelled: link hidden, note shown');
+  await page.screenshot({ path: SHOT13('console-cancelled'), fullPage: true });
+  await cpage.getByTestId('link-gone').waitFor({ timeout: 8000 });
+  const goneText = (await cpage.getByTestId('link-gone').innerText()).replace(/\s+/g, ' ');
+  check(goneText.includes('This link is no longer valid') && goneText.includes('Please contact your interviewer'), 'candidate page (open at the time): "no longer valid — contact your interviewer"');
+  await cpage.screenshot({ path: SHOT13('candidate-cancelled') });
+  await cpage.goto(cancelUrl);
+  await cpage.getByText('This link is not valid').waitFor();
+  check(true, 'opening the cancelled link afresh → invalid-link screen');
+
+  await page.goto(BASE + candUrl);
+  await page.getByTestId('session-row-cancelled').waitFor();
+  const aCard = (await page.locator('.card', { has: page.locator('h2', { hasText: 'Set A' }) }).innerText()).replace(/\s+/g, ' ');
+  check(aCard.includes('cancelled') && aCard.includes('completed') && !aCard.includes('superseded'), 'profile: cancelled row listed; the older completed Set A is NOT superseded: ' + aCard.slice(0, 160));
+  check(await page.getByTestId('start-A').isEnabled(), 'Start Set A still available after a cancel');
+  await page.screenshot({ path: SHOT13('profile'), fullPage: true });
+  await page.goto(BASE + '/');
+  await page.getByText('Test Candidate').waitFor();
+  const tbl13 = (await page.locator('table').innerText()).replace(/\s+/g, ' ');
+  check(tbl13.includes('9/12') && !tbl13.includes('cancelled'), 'comparison table keeps the completed 9/12 for Set A, never the cancelled session');
+}
+
 // ---- v1.2: self-paced multiple-choice section (stage 0; synthetic section M exists in the MOCK only) --
 if (!API_MODE) {
   const SHOT12 = (name) => `/tmp/talent-os-v12-${name}.png`;

@@ -27,9 +27,12 @@ interface Snapshot {
   offset: number;
 }
 
+/** v1.3: 'gone' = the link answered 404 after it had been valid (the interviewer cancelled it). */
+type LinkStatus = 'loading' | 'ok' | 'notfound' | 'gone' | 'error';
+
 function useCandidateState(token: string) {
   const [snap, setSnap] = useState<Snapshot | null>(null);
-  const [status, setStatus] = useState<'loading' | 'ok' | 'notfound' | 'error'>('loading');
+  const [status, setStatus] = useState<LinkStatus>('loading');
   const versionRef = useRef<number | null>(null);
 
   const apply = useCallback((state: CandidateState, fetchTime = Date.now()) => {
@@ -39,6 +42,7 @@ function useCandidateState(token: string) {
 
   useEffect(() => {
     let cancelled = false;
+    let dead = false;
     let timer: number | undefined;
     const poll = async () => {
       const fetchTime = Date.now();
@@ -50,11 +54,16 @@ function useCandidateState(token: string) {
         if (versionRef.current !== state.version) apply(state, fetchTime);
       } catch (e) {
         if (cancelled) return;
-        if (e instanceof ApiError && e.status === 404) setStatus('notfound');
-        else setStatus((s) => (s === 'ok' ? 'ok' : 'error'));
-        if (e instanceof ApiError && e.status === 429) wait = Math.max(1000, e.retryAfterMs ?? 1000);
+        if (e instanceof ApiError && e.status === 404) {
+          // v1.3: 404 after a valid state = the interviewer cancelled the link. A dead link stays dead.
+          setStatus((s) => (s === 'ok' || s === 'gone' ? 'gone' : 'notfound'));
+          dead = true;
+        } else {
+          setStatus((s) => (s === 'ok' ? 'ok' : 'error'));
+          if (e instanceof ApiError && e.status === 429) wait = Math.max(1000, e.retryAfterMs ?? 1000);
+        }
       } finally {
-        if (!cancelled) timer = window.setTimeout(poll, wait);
+        if (!cancelled && !dead) timer = window.setTimeout(poll, wait);
       }
     };
     void poll();
@@ -109,6 +118,13 @@ export function CandidateView() {
   useEffect(() => {
     if (phase === 'ended') void rec.stopAll();
   }, [phase, rec]);
+  // v1.3: the link is dead — stop recording, drop pending uploads, send nothing more.
+  useEffect(() => {
+    if (status === 'gone' || status === 'notfound') {
+      events.stop();
+      rec.abort();
+    }
+  }, [status, events, rec]);
 
   const endsAt = snap?.state.sectionEndsAt ?? null;
   const now = useTick(endsAt !== null);
@@ -124,6 +140,15 @@ export function CandidateView() {
     }
   }, [apply, token]);
 
+  if (status === 'gone') {
+    return (
+      <Frame>
+        <div data-testid="link-gone">
+          <Centered title="This link is no longer valid" body="Please contact your interviewer." />
+        </div>
+      </Frame>
+    );
+  }
   if (status === 'notfound') {
     return (
       <Frame>
@@ -281,8 +306,11 @@ function ConsentScreen({ text, onAccept }: { text: string; onAccept: () => Promi
   );
 }
 
+/** Chrome reports a webcam held by another app as NotReadableError (older builds: TrackStartError). */
+const CAMERA_IN_USE = new Set(['NotReadableError', 'TrackStartError']);
+
 function DeviceSetup({ rec, snapshot }: { rec: RecordingController; snapshot: ReturnType<RecordingController['getSnapshot']> }) {
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ kind: 'camera' | 'screen'; text: string } | null>(null);
   const [busy, setBusy] = useState<'camera' | 'screen' | null>(null);
   const capture = async (kind: 'camera' | 'screen') => {
     setBusy(kind);
@@ -290,9 +318,20 @@ function DeviceSetup({ rec, snapshot }: { rec: RecordingController; snapshot: Re
     try {
       await rec.capture(kind);
     } catch (e) {
-      if (e instanceof NotMonitorError) setError('Please choose Entire screen (not a window or a tab), then try again.');
-      else if (e instanceof DOMException && e.name === 'NotAllowedError') setError(kind === 'camera' ? 'Camera and microphone access was blocked. Please allow it and try again.' : 'Screen sharing was cancelled. Please choose Entire screen.');
-      else setError(e instanceof Error ? e.message : 'Something went wrong — please try again.');
+      const name = typeof e === 'object' && e !== null && 'name' in e ? String((e as { name: unknown }).name) : '';
+      const text =
+        e instanceof NotMonitorError
+          ? 'Please choose Entire screen (not a window or a tab), then try again.'
+          : kind === 'camera' && CAMERA_IN_USE.has(name)
+            ? 'Your camera or microphone is being used by another app (for example Teams). Either turn the camera off in that app, or join the call from this browser, then try again.'
+            : name === 'NotAllowedError'
+              ? kind === 'camera'
+                ? 'Camera and microphone access was blocked. Please allow it and try again.'
+                : 'Screen sharing was cancelled. Please choose Entire screen.'
+              : e instanceof Error && e.message
+                ? e.message
+                : 'Something went wrong — please try again.';
+      setError({ kind, text });
     } finally {
       setBusy(null);
     }
@@ -313,7 +352,7 @@ function DeviceSetup({ rec, snapshot }: { rec: RecordingController; snapshot: Re
             </div>
           ) : (
             <button className="btn btn-primary mt-3 px-4 py-2 text-base" onClick={() => capture('camera')} disabled={busy !== null} data-testid="camera-on">
-              Turn on camera and microphone
+              {error?.kind === 'camera' ? 'Try again' : 'Turn on camera and microphone'}
             </button>
           )}
         </div>
@@ -333,7 +372,7 @@ function DeviceSetup({ rec, snapshot }: { rec: RecordingController; snapshot: Re
       </div>
       {error && (
         <p className="mt-4 text-base text-red-700" data-testid="device-error">
-          {error}
+          {error.text}
         </p>
       )}
       {cameraOn && screenOn && !snapshot.recording && <p className="mt-4 text-base text-slate-600">Starting the recording…</p>}

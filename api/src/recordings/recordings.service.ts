@@ -138,9 +138,51 @@ export class RecordingsService {
     return ok;
   }
 
+  /** Removes one segment's file (and any remux temp) under its lock, then marks the row deleted. */
+  private async deleteSegment(r: { id: string; path: string }, now: Date): Promise<void> {
+    await this.withLock(r.id, async () => {
+      if (r.path) {
+        await fs.rm(r.path, { force: true });
+        await fs.rm(`${r.path}.tmp`, { force: true });
+      }
+      await this.prisma.recordingSegment.update({ where: { id: r.id }, data: { deletedAt: now } });
+    });
+    if (r.path) await fs.rmdir(dirname(r.path)).catch(() => undefined); // only when empty
+  }
+
+  private async deleteAll(rows: Array<{ id: string; path: string }>, now: Date, job: string): Promise<{ deleted: number; failed: number }> {
+    let deleted = 0;
+    let failed = 0;
+    for (const r of rows) {
+      try {
+        await this.deleteSegment(r, now);
+        deleted += 1;
+      } catch (e) {
+        failed += 1;
+        this.logger.warn(`${job}: could not delete segment ${r.id}: ${firstLine((e as Error).message)}`);
+      }
+    }
+    if (rows.length) this.logger.log(`${job}: ${deleted} segment(s) deleted, ${failed} failed`);
+    return { deleted, failed };
+  }
+
+  /**
+   * v1.3: a cancelled session never ran, so whatever a candidate uploaded during the device check
+   * has no purpose. Deletes every live segment of the session and marks them deleted. Anything
+   * that fails here is retried by the daily retention job (cancelled sessions are always eligible).
+   */
+  async deleteForSession(sessionId: string, now = new Date()): Promise<{ deleted: number; failed: number }> {
+    const rows = await this.prisma.recordingSegment.findMany({
+      where: { sessionId, deletedAt: null },
+      select: { id: true, path: true },
+    });
+    return this.deleteAll(rows, now, `cancel ${sessionId}`);
+  }
+
   /**
    * Deletes files RECORDING_RETENTION_DAYS after the candidate's decision; undecided candidates
-   * fall back to 365 days after the session ended. Marks segments deleted; logs counts only.
+   * fall back to 365 days after the session ended; cancelled sessions (v1.3) are always eligible.
+   * Marks segments deleted; logs counts only.
    */
   async runRetention(now = new Date()): Promise<{ deleted: number; failed: number }> {
     const cutoff = new Date(now.getTime() - cfg().recordingRetentionDays * DAY_MS);
@@ -151,28 +193,12 @@ export class RecordingsService {
         OR: [
           { session: { application: { candidate: { decisionAt: { lt: cutoff } } } } },
           { session: { endedAt: { lt: yearAgo }, application: { candidate: { decisionAt: null } } } },
+          { session: { status: 'cancelled' } },
         ],
       },
       select: { id: true, path: true },
     });
-    let deleted = 0;
-    let failed = 0;
-    for (const r of rows) {
-      try {
-        await this.withLock(r.id, async () => {
-          await fs.rm(r.path, { force: true });
-          await fs.rm(`${r.path}.tmp`, { force: true });
-          await this.prisma.recordingSegment.update({ where: { id: r.id }, data: { deletedAt: now } });
-        });
-        await fs.rmdir(dirname(r.path)).catch(() => undefined); // only when empty
-        deleted += 1;
-      } catch (e) {
-        failed += 1;
-        this.logger.warn(`retention: could not delete segment ${r.id}: ${firstLine((e as Error).message)}`);
-      }
-    }
-    if (rows.length) this.logger.log(`retention: ${deleted} segment(s) deleted, ${failed} failed`);
-    return { deleted, failed };
+    return this.deleteAll(rows, now, 'retention');
   }
 
   @Cron('15 3 * * *', { name: 'recordings-daily', timeZone: 'Europe/London' })

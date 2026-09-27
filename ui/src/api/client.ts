@@ -10,8 +10,10 @@ import type {
   ExtendSession,
   Kit,
   Me,
+  Navigate,
   PresentQuestion,
   SaveAnswer,
+  SaveChoice,
   SavedAnswer,
   Session,
   StartRecording,
@@ -84,6 +86,11 @@ export interface ApiClient {
   putChunk(token: string, segmentId: string, seq: number, blob: Blob, keepalive?: boolean): Promise<ChunkAck>;
   stopRecording(token: string, segmentId: string, keepalive?: boolean): Promise<void>;
   postEvents(token: string, body: CandidateEvents, keepalive?: boolean): Promise<void>;
+  // v1.2: self-paced sections (the candidate drives) and multiple choice.
+  startTest(token: string): Promise<CandidateState>;
+  navigate(token: string, body: Navigate): Promise<CandidateState>;
+  submitTest(token: string): Promise<CandidateState>;
+  saveChoice(token: string, body: SaveChoice): Promise<SavedAnswer>;
 }
 
 const BASE = '/api';
@@ -157,6 +164,10 @@ export const httpClient: ApiClient = {
   stopRecording: (token, segmentId, keepalive) =>
     request('POST', `/candidate/${enc(token)}/recordings/${enc(segmentId)}/stop`, undefined, keepalive),
   postEvents: (token, body, keepalive) => request('POST', `/candidate/${enc(token)}/events`, body, keepalive),
+  startTest: (token) => request('POST', `/candidate/${enc(token)}/start`),
+  navigate: (token, body) => request('POST', `/candidate/${enc(token)}/navigate`, body),
+  submitTest: (token) => request('POST', `/candidate/${enc(token)}/submit`),
+  saveChoice: (token, body) => request('PUT', `/candidate/${enc(token)}/choice`, body),
 };
 
 /** Export links are plain navigations (attachments), not fetches. */

@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Markdown content */
+.md > * + * { margin-top: 0.6em; }
+.md p { line-height: 1.55; }
+.md ul { list-style: disc; padding-left: 1.4em; }
+.md ol { list-style: decimal; padding-left: 1.4em; }
+.md li + li { margin-top: 0.2em; }
+.md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: #f1f5f9; padding: 0.1em 0.3em; border-radius: 3px; }
+.md pre { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.6em 0.8em; overflow-x: auto; }
+.md pre code { background: none; padding: 0; }
+.md table { border-collapse: collapse; font-size: 0.95em; }
+.md th, .md td { border: 1px solid #e2e8f0; padding: 0.25em 0.6em; text-align: left; }
+.md th { background: #f8fafc; }
+.md h1, .md h2, .md h3, .md h4 { font-weight: 600; }
+.md h1 { font-size: 1.3em; } .md h2 { font-size: 1.15em; } .md h3 { font-size: 1.05em; }
+.md blockquote { border-left: 3px solid #cbd5e1; padding-left: 0.8em; color: #475569; }
+.md a { color: #1d4ed8; text-decoration: underline; }
+.md strong { font-weight: 600; }
+
+/* Code blocks */
+.hl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; line-height: 1.5; white-space: pre; overflow-x: auto; }
+
+.btn { @apply inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed; }
+.btn-primary { @apply border-slate-900 bg-slate-900 text-white hover:bg-slate-700; }
+.btn-danger { @apply border-red-700 bg-red-700 text-white hover:bg-red-600; }
+.btn-sm { @apply px-2 py-1 text-xs; }
+.input { @apply rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400; }
+.card { @apply rounded-lg border border-slate-200 bg-white; }
+.chip { @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium; }
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; }
+  @page { size: A4; margin: 14mm; }
+}

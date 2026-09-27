@@ -199,7 +199,7 @@ describe('recorded written test (e2e)', () => {
     const saved = (await http.put(`${cand}/answer`).send({ position: 1, text: 'mean is 0.042' }).expect(200)).body;
     expect(Object.keys(saved)).toEqual(['savedAt']);
     state = (await http.get(`${cand}/state`).expect(200)).body as CandidateState;
-    expect(state.answer).toEqual({ text: 'mean is 0.042', savedAt: saved.savedAt });
+    expect(state.answer).toEqual({ text: 'mean is 0.042', savedAt: saved.savedAt, choice: null });
     const notYet = await http.put(`${cand}/answer`).send({ position: 3, text: 'x' }).expect(409);
     expect(notYet.body.reason).toBe('not_presented');
     await http.put(`${cand}/answer`).send({ position: 9, text: 'x' }).expect(400);

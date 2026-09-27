@@ -84,9 +84,11 @@ const tradeLikes = (row: GameRow) =>
 /** INTERVIEWER view of a game: includes the true value and the fair value. */
 export function toMarketGame(row: GameRow): MarketGame {
   const u = unpack(row);
+  const cfg = u.config;
   const trades = tradeLikes(row);
   const settled = row.status === 'settled';
   const last = row.quotes[row.quotes.length - 1];
+  const fairAt = cfg.kind === 'dice' ? (revealed: number) => diceFairValue(u.rolls, revealed, cfg.dice, cfg.sides) : null;
   return {
     id: row.id,
     questionKey: row.questionKey,
@@ -103,16 +105,7 @@ export function toMarketGame(row: GameRow): MarketGame {
     trueValue: row.trueValue,
     fairValue: u.fairValue,
     pnl: pnlOf(trades, row.trueValue),
-    metrics: settled
-      ? computeMetrics(
-          row.quotes,
-          trades,
-          row.trueValue,
-          u.config.kind === 'dice'
-            ? (revealed) => diceFairValue(u.rolls, revealed, u.config.kind === 'dice' ? u.config.dice : 0, u.config.kind === 'dice' ? u.config.sides : 0)
-            : null,
-        )
-      : null,
+    metrics: settled ? computeMetrics(row.quotes, trades, row.trueValue, fairAt) : null,
   };
 }
 

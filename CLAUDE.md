@@ -7,9 +7,16 @@ decision. The first kit is the Quant Trader kit (Basis Trading Desk).
 ## Ground rules
 
 - **The candidate view is an allowlist.** `CandidateState` in `api/src/contracts/api.ts` is the only
-  data an unauthenticated request can ever receive. Never add a question title, key, model answer,
-  rubric, trap note, score, note, flag, other questions or other candidates. A title alone can give
+  data an unauthenticated request can ever receive. Beyond the presented question it may carry only
+  the candidate's own typed answer and their recording/consent status. Never add a question title,
+  key, model answer, rubric, trap note, score, interviewer note, flag, other questions or other
+  candidates. A title alone can give
   an answer away. Tests enforce this; keep them.
+- **Recordings are the most sensitive data we hold.** A candidate's camera, microphone and screen
+  are recorded only after they accept the consent notice. Recordings are stored in the `recordings`
+  volume, served only on protected `/api/sessions/:id/recordings/*`, never under `/api/candidate/`,
+  and deleted 90 days after the hiring decision. Integrity events record counts, never content —
+  a paste is logged as "412 chars", not as what was pasted.
 - **Real kits never enter git.** Kits with answers live in `private/` (gitignored) and in the
   database. The org's default repository permission is `read`, so every member — including a
   future hire — can read this repo. Only synthetic fixtures (`kit/fixtures/`) are committed.

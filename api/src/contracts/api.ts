@@ -2,8 +2,12 @@
  * talent-os HTTP contract — TYPES ONLY, no runtime code.
  *
  * Shared by api/ (controllers return exactly these shapes) and ui/ (imports them through the
- * `@contracts` alias). FROZEN for v0: change it only through the orchestrator, never inside a
- * feature branch. If you need something it does not have, say so in your report.
+ * `@contracts` alias). FROZEN: change it only through the orchestrator, never inside a feature
+ * branch. If you need something it does not have, say so in your report.
+ *
+ * v1 (2026-09-27): recorded written test. Candidates type answers in the app while the
+ * interviewer drives the session live, and the candidate's browser records camera + microphone and
+ * the entire screen, uploaded in chunks. Recordings are kept 90 days after the hiring decision.
  *
  * Conventions
  * - JSON over HTTP, everything under /api.
@@ -155,6 +159,11 @@ export interface ResponseRecord {
   markedForReturn: boolean;
   timeSpentSeconds: number;
   updatedAt: string;
+  /** What the candidate typed in the app for this question (v1). Null = nothing typed. */
+  candidateAnswer: string | null;
+  candidateAnswerAt: string | null;
+  /** First time this question was presented; used to jump recordings to the question (v1). */
+  firstPresentedAt: string | null;
 }
 
 export interface DimensionRating {
@@ -215,6 +224,60 @@ export interface Session {
   verdict: Verdict | null;
   /** Server clock, for client-side timer offset. */
   serverNow: string;
+  /** v1: recording consent and uploaded segments. */
+  recording: SessionRecording;
+  /** v1: integrity timeline reported by the candidate's browser, oldest first. */
+  events: IntegrityEvent[];
+}
+
+// ---- v1: recording + integrity -------------------------------------------------------------
+
+export type RecordingStream = 'camera' | 'screen';
+
+export interface RecordingSegment {
+  id: string;
+  /** camera = webcam + microphone; screen = entire screen, no audio. */
+  stream: RecordingStream;
+  mimeType: string;
+  startedAt: string;
+  /** Null while recording, or when the page closed without stopping. */
+  endedAt: string | null;
+  lastChunkAt: string | null;
+  bytes: number;
+  chunks: number;
+}
+
+export interface SessionRecording {
+  /** Set at session creation; the candidate must consent and share devices before starting. */
+  required: boolean;
+  consentAt: string | null;
+  segments: RecordingSegment[];
+}
+
+export type IntegrityEventType =
+  | 'page_loaded'
+  | 'consent_given'
+  | 'devices_ready'
+  | 'screen_share_stopped'
+  | 'screen_share_resumed'
+  | 'camera_stopped'
+  | 'tab_hidden'
+  | 'tab_visible'
+  | 'window_blur'
+  | 'window_focus'
+  | 'paste'
+  | 'copy';
+
+export interface IntegrityEvent {
+  type: IntegrityEventType;
+  /** Server receive time. */
+  at: string;
+  /** Candidate's clock, as reported. */
+  clientAt: string | null;
+  /** Question presented when the server received it (server-derived, never client-supplied). */
+  questionKey: string | null;
+  /** Short and non-content only, e.g. "412 chars" for a paste. Never the pasted text. */
+  detail: string | null;
 }
 
 // POST  /api/sessions                             body: CreateSession   → Session
@@ -226,10 +289,14 @@ export interface Session {
 // PATCH /api/sessions/:id                         body: UpdateSession   → Session
 // POST  /api/sessions/:id/end                                           → Session   (→ completed)
 // POST  /api/sessions/:id/reopen                                        → Session   (completed → live)
+// GET   /api/sessions/:id/recordings/:segmentId   → the media file (Content-Type = segment mimeType),
+//                                                   HTTP Range supported for seeking. PROTECTED.
 
 export interface CreateSession {
   candidateId: string;
   section: SectionKey;
+  /** v1. Default: section.candidateView. False = no consent/recording (e.g. an adjustment). */
+  recordingRequired?: boolean;
 }
 
 export interface PresentQuestion {
@@ -276,6 +343,10 @@ export interface SessionSummary {
   bonusesGiven: number;
   /** A newer session exists for the same section (a re-sit). Old sessions are retained. */
   superseded: boolean;
+  /** v1: at least one recording segment exists. */
+  recorded: boolean;
+  /** v1: count of tab_hidden, window_blur, paste, screen_share_stopped and camera_stopped events. */
+  integrityFlags: number;
 }
 
 export interface CandidateSummary {
@@ -296,6 +367,8 @@ export interface CandidateDetail extends CandidateSummary {
   notes: string | null;
   level: string | null;
   compNote: string | null;
+  /** v1: when overallDecision was last set (null when unset). Starts the 90-day recording clock. */
+  decisionAt: string | null;
   /** Every session, newest first. */
   sessions: SessionSummary[];
 }
@@ -340,7 +413,66 @@ export interface CandidateScorecard {
 // Candidate view — PUBLIC, token-gated. The only unauthenticated data endpoint.
 // ---------------------------------------------------------------------------------------------
 
-// GET /api/candidate/:token/state → CandidateState   (404 for unknown tokens)
+// GET  /api/candidate/:token/state                              → CandidateState   (404 for unknown tokens)
+// v1 — all token-gated, rate-limited, and scoped to the token's own session:
+// POST /api/candidate/:token/consent               body: ConsentRequest  → CandidateState
+// PUT  /api/candidate/:token/answer                body: SaveAnswer      → SavedAnswer
+//        409 unless the question at `position` is presented now or was presented earlier.
+// POST /api/candidate/:token/recordings            body: StartRecording  → StartedRecording
+//        409 unless consent was given; allowed while the session is ready or live.
+// PUT  /api/candidate/:token/recordings/:segmentId/chunks/:seq   raw bytes → ChunkAck
+//        seq starts at 0 and is contiguous: seq < next → 200 no-op (duplicate), seq > next → 409.
+//        Max 8 MB per chunk, 6 GB per session.
+// POST /api/candidate/:token/recordings/:segmentId/stop                  → 204
+// POST /api/candidate/:token/events                body: CandidateEvents → 204   (max 50 per call)
+
+export interface ConsentRequest {
+  accepted: true;
+}
+
+export interface SaveAnswer {
+  /** CandidateQuestion.position. */
+  position: number;
+  /** Max 20,000 characters. */
+  text: string;
+}
+
+export interface SavedAnswer {
+  savedAt: string;
+}
+
+export interface StartRecording {
+  stream: RecordingStream;
+  /** e.g. "video/webm;codecs=vp8,opus". Must start with video/webm or video/mp4. */
+  mimeType: string;
+}
+
+export interface StartedRecording {
+  segmentId: string;
+}
+
+export interface ChunkAck {
+  /** Number of chunks stored for the segment so far. */
+  received: number;
+}
+
+export interface CandidateEvents {
+  events: { type: IntegrityEventType; clientAt: string; detail?: string }[];
+}
+
+/** v1: what the candidate's page needs to gate the test behind consent and device checks. */
+export interface CandidateRecording {
+  required: boolean;
+  consentGiven: boolean;
+  /** Plain-text notice the candidate accepts (versioned server-side). Null when not required. */
+  consentText: string | null;
+}
+
+/** v1: the candidate's own saved answer for the presented question, so a refresh restores it. */
+export interface CandidateAnswer {
+  text: string;
+  savedAt: string | null;
+}
 
 export type CandidatePhase = 'waiting' | 'intro' | 'question' | 'ended';
 
@@ -371,6 +503,10 @@ export interface CandidateState {
   serverNow: string;
   /** Bumps on every change the candidate should see. */
   version: number;
+  /** v1. */
+  recording: CandidateRecording;
+  /** v1. The candidate's own answer for the presented question; null outside phase 'question'. */
+  answer: CandidateAnswer | null;
 }
 
 // GET /api/health → { ok: true }   (unauthenticated)

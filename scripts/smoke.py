@@ -20,7 +20,8 @@ BASE = os.environ.get("BASE", "http://localhost:8170").rstrip("/")
 EMAIL = os.environ.get("EMAIL", "smoke@basistrading.net")
 AUTH = {"cf-access-authenticated-user-email": EMAIL}
 
-STATE_KEYS = {"phase", "orgName", "sectionLabel", "instructions", "question", "presentedAt", "serverNow", "version"}
+STATE_KEYS = {"phase", "orgName", "sectionLabel", "instructions", "question", "presentedAt", "serverNow", "version",
+              "recording", "answer"}
 QUESTION_KEYS = {"position", "total", "prompt", "dataset", "code", "timeMinutes"}
 
 failures = []

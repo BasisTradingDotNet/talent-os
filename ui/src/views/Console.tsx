@@ -280,6 +280,9 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
             )}
             {!live && <span className="text-xs text-slate-500">Session is {session.status}: navigation only selects.</span>}
             {live && presentedKey === null && <span className="text-xs text-slate-500">Candidate is on the intro screen.</span>}
+            <span className="ml-auto text-[11px] text-slate-400" title="Shortcuts work when no text field has focus">
+              Keys: {section.scoring === 'rubric' ? '0–3 score · ' : ''}←/→ prev/next
+            </span>
           </div>
 
           {live && presentedKey && selectedKey !== presentedKey && (

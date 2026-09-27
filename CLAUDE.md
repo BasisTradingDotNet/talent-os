@@ -17,6 +17,10 @@ decision. The first kit is the Quant Trader kit (Basis Trading Desk).
   volume, served only on protected `/api/sessions/:id/recordings/*`, never under `/api/candidate/`,
   and deleted 90 days after the hiring decision. Integrity events record counts, never content —
   a paste is logged as "412 chars", not as what was pasted.
+- **Candidates see BTNET, never G-20.** The parent group does not disclose that it is hiring.
+  Candidate-facing text takes its name from `CANDIDATE_BRAND`, never from the internal org name.
+  This covers the page header, the consent notice and anything future such as emails or the careers
+  site. `scripts/smoke.py` fails if "G-20" reaches the candidate payload or the public bundle.
 - **Real kits never enter git.** Kits with answers live in `private/` (gitignored) and in the
   database. The org's default repository permission is `read`, so every member — including a
   future hire — can read this repo. Only synthetic fixtures (`kit/fixtures/`) are committed.

@@ -105,7 +105,7 @@ export class CandidateViewService {
         })
       : null;
     return buildCandidateState({
-      orgName: s.org.name,
+      orgName: cfg().candidateBrand ?? s.org.name,
       section: { candidateLabel: ts.section.candidateLabel, showInstructions: !!ts.section.showInstructions },
       candidateInstructions: s.kit.candidateInstructions,
       status: s.status,

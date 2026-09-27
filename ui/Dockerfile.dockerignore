@@ -1,0 +1,8 @@
+# Applies when building with `-f ui/Dockerfile` from the repo root (BuildKit picks
+# <Dockerfile>.dockerignore over the context root's .dockerignore).
+**/node_modules
+**/dist
+**/.git
+private
+api/test
+api/prisma

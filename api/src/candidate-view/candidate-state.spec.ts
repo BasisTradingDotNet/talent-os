@@ -36,10 +36,20 @@ const base: CandidateStateInput = {
   version: 4,
   sectionQuestions: [{ key: 'A1', prompt: 'first', dataset: null, code: null, timeMinutes: 1 }, leakyRow],
   now: new Date('2026-09-27T12:00:05.000Z'),
+  recordingRequired: true,
+  consentAt: new Date('2026-09-27T11:55:00.000Z'),
+  retentionDays: 90,
+  presentedAnswer: { candidateAnswer: 'my typed answer', candidateAnswerAt: new Date('2026-09-27T12:00:03.000Z') },
+  sectionEndsAt: new Date('2026-09-27T12:12:00.000Z'),
 };
 
-const STATE_KEYS = ['phase', 'orgName', 'sectionLabel', 'instructions', 'question', 'presentedAt', 'serverNow', 'version'].sort();
+const STATE_KEYS = [
+  'phase', 'orgName', 'sectionLabel', 'instructions', 'question', 'presentedAt', 'serverNow', 'version',
+  'recording', 'answer', 'sectionEndsAt',
+].sort();
 const QUESTION_KEYS = ['position', 'total', 'prompt', 'dataset', 'code', 'timeMinutes'].sort();
+const RECORDING_KEYS = ['required', 'consentGiven', 'consentText'].sort();
+const ANSWER_KEYS = ['text', 'savedAt'].sort();
 
 describe('buildCandidateState', () => {
   it('returns exactly the CandidateState and CandidateQuestion keys', () => {
@@ -57,6 +67,39 @@ describe('buildCandidateState', () => {
     expect(state.presentedAt).toBe('2026-09-27T12:00:00.000Z');
     expect(state.serverNow).toBe('2026-09-27T12:00:05.000Z');
     expect(state.version).toBe(4);
+    expect(Object.keys(state.recording).sort()).toEqual(RECORDING_KEYS);
+    expect(Object.keys(state.answer!).sort()).toEqual(ANSWER_KEYS);
+    expect(state.answer).toEqual({ text: 'my typed answer', savedAt: '2026-09-27T12:00:03.000Z' });
+    expect(state.sectionEndsAt).toBe('2026-09-27T12:12:00.000Z');
+  });
+
+  it('recording: consent text is versioned, names the org and the retention period', () => {
+    const state = buildCandidateState(base);
+    expect(state.recording.required).toBe(true);
+    expect(state.recording.consentGiven).toBe(true);
+    expect(state.recording.consentText).toContain('Only the G-20 Group hiring team');
+    expect(state.recording.consentText).toContain('deleted 90 days after');
+    expect(buildCandidateState({ ...base, consentAt: null, retentionDays: 30 }).recording).toMatchObject({
+      consentGiven: false,
+      consentText: expect.stringContaining('deleted 30 days after'),
+    });
+    expect(buildCandidateState({ ...base, recordingRequired: false }).recording).toEqual({
+      required: false,
+      consentGiven: true,
+      consentText: null,
+    });
+  });
+
+  it('answer: empty when nothing typed, null outside the question phase; sectionEndsAt null when untimed', () => {
+    expect(buildCandidateState({ ...base, presentedAnswer: null }).answer).toEqual({ text: '', savedAt: null });
+    expect(buildCandidateState({ ...base, presentedAnswer: { candidateAnswer: null, candidateAnswerAt: null } }).answer).toEqual({
+      text: '',
+      savedAt: null,
+    });
+    expect(buildCandidateState({ ...base, status: 'ready', presentedQuestionKey: null }).answer).toBeNull();
+    expect(buildCandidateState({ ...base, status: 'live', presentedQuestionKey: null }).answer).toBeNull();
+    expect(buildCandidateState({ ...base, status: 'completed', presentedQuestionKey: null }).answer).toBeNull();
+    expect(buildCandidateState({ ...base, sectionEndsAt: null }).sectionEndsAt).toBeNull();
   });
 
   it('never leaks confidential question fields', () => {

@@ -1,9 +1,11 @@
 import { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import request from 'supertest';
 import { AppModule } from '../app.module';
+import { configureApp } from '../app-setup';
 import type { CandidateDetail, CandidateState, Kit, Session } from '../contracts/api';
 import { PrismaService } from '../prisma/prisma.service';
 import { seedKitFile } from '../seed/seed-kit';
@@ -21,12 +23,12 @@ describe('talent-os API (e2e)', () => {
   beforeAll(async () => {
     execSync('npx prisma migrate deploy', { cwd: API_DIR, env: process.env, stdio: 'ignore' });
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-    app = moduleRef.createNestApplication();
-    app.setGlobalPrefix('api');
+    app = moduleRef.createNestApplication<NestExpressApplication>();
+    configureApp(app as NestExpressApplication);
     await app.init();
     prisma = app.get(PrismaService);
     await prisma.$executeRawUnsafe(
-      'TRUNCATE "Organization","Job","Kit","Question","Candidate","Application","Session","Response","Rating" CASCADE',
+      'TRUNCATE "Organization","Job","Kit","Question","Candidate","Application","Session","Response","Rating","RecordingSegment","SessionEvent" CASCADE',
     );
     await seedKitFile(prisma, FIXTURE, { orgSlug: 'g20' });
     http = request(app.getHttpServer());
@@ -98,7 +100,9 @@ describe('talent-os API (e2e)', () => {
     const res = await http.get(stateUrl).expect(200);
     expect(res.headers['cache-control']).toBe('no-store');
     state = res.body as CandidateState;
-    expect(Object.keys(state).sort()).toEqual(['instructions', 'orgName', 'phase', 'presentedAt', 'question', 'sectionLabel', 'serverNow', 'version']);
+    expect(Object.keys(state).sort()).toEqual([
+      'answer', 'instructions', 'orgName', 'phase', 'presentedAt', 'question', 'recording', 'sectionEndsAt', 'sectionLabel', 'serverNow', 'version',
+    ]);
     expect(state.phase).toBe('question');
     expect(state.question).toMatchObject({ position: 1, total: 4, timeMinutes: 4 });
     expect(state.question!.prompt).toContain('five daily returns');

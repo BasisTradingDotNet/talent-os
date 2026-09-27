@@ -3,10 +3,10 @@ import type { Prisma } from '@prisma/client';
 import type { CandidateDetail, CandidateSummary, CreateCandidate, SessionSummary, UpdateCandidate } from '../contracts/api';
 import { KitService } from '../kit/kit.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { KitCache, SESSION_INCLUDE, SessionRow, toSummary } from '../sessions/sessions.service';
+import { KitCache, SESSION_SUMMARY_INCLUDE, SessionSummaryRow, toSummary } from '../sessions/sessions.service';
 
 const CANDIDATE_INCLUDE = {
-  apps: { include: { sessions: { include: SESSION_INCLUDE } }, orderBy: { createdAt: 'asc' } },
+  apps: { include: { sessions: { include: SESSION_SUMMARY_INCLUDE } }, orderBy: { createdAt: 'asc' } },
 } satisfies Prisma.CandidateInclude;
 
 type CandidateRow = Prisma.CandidateGetPayload<{ include: typeof CANDIDATE_INCLUDE }>;
@@ -16,7 +16,7 @@ export class CandidatesService {
   constructor(private readonly prisma: PrismaService, private readonly kits: KitService) {}
 
   /** Every session of the candidate across applications, newest first. */
-  static sessionsOf(c: CandidateRow): SessionRow[] {
+  static sessionsOf(c: CandidateRow): SessionSummaryRow[] {
     return c.apps
       .flatMap((a) => a.sessions)
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id));
@@ -51,6 +51,7 @@ export class CandidatesService {
       notes: c.notes ?? null,
       level: c.level ?? null,
       compNote: c.compNote ?? null,
+      decisionAt: c.decisionAt ? c.decisionAt.toISOString() : null,
       sessions,
     };
   }
@@ -111,13 +112,17 @@ export class CandidatesService {
   }
 
   async patch(orgId: string, id: string, body: UpdateCandidate): Promise<CandidateDetail> {
-    await this.rowOf(orgId, id);
+    const current = await this.rowOf(orgId, id);
     const data: Prisma.CandidateUpdateInput = {};
     if (body.name !== undefined) data.name = body.name;
     if (body.email !== undefined) data.email = body.email;
     if (body.source !== undefined) data.source = body.source;
     if (body.notes !== undefined) data.notes = body.notes;
-    if (body.overallDecision !== undefined) data.overallDecision = body.overallDecision;
+    if (body.overallDecision !== undefined && body.overallDecision !== (current.overallDecision ?? null)) {
+      // v1: the decision starts the recording retention clock; clearing it stops the clock.
+      data.overallDecision = body.overallDecision;
+      data.decisionAt = body.overallDecision === null ? null : new Date();
+    }
     if (body.level !== undefined) data.level = body.level;
     if (body.compNote !== undefined) data.compNote = body.compNote;
     await this.prisma.candidate.update({ where: { id }, data });

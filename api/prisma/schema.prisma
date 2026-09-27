@@ -19,6 +19,7 @@ model Organization {
   candidates Candidate[]
   apps       Application[]
   sessions   Session[]
+  segments   RecordingSegment[]
 }
 
 model Job {
@@ -91,6 +92,8 @@ model Candidate {
   overallDecision String?
   level           String?
   compNote        String?
+  /// v1: when overallDecision was last set; starts the recording retention clock.
+  decisionAt      DateTime?
   createdAt       DateTime      @default(now())
   apps            Application[]
 
@@ -134,8 +137,18 @@ model Session {
   createdAt            DateTime     @default(now())
   startedAt            DateTime?
   endedAt              DateTime?
+  /// v1: recording consent. Recording segments are accepted only after consentAt is set.
+  recordingRequired    Boolean      @default(false)
+  consentAt            DateTime?
+  consentIp            String?
+  consentUserAgent     String?
+  consentVersion       String?
+  /// v1.1: minutes the interviewer added to the section time limit.
+  extensionMinutes     Int          @default(0)
   responses            Response[]
   ratings              Rating[]
+  segments             RecordingSegment[]
+  events               SessionEvent[]
 
   @@index([orgId, applicationId])
 }
@@ -153,6 +166,11 @@ model Response {
   markedForReturn  Boolean  @default(false)
   timeSpentSeconds Int      @default(0)
   updatedAt        DateTime @updatedAt
+  /// v1: what the candidate typed in the app.
+  candidateAnswer   String?
+  candidateAnswerAt DateTime?
+  /// v1: first time the question was presented (never reset).
+  firstPresentedAt  DateTime?
 
   @@unique([sessionId, questionKey])
 }
@@ -166,4 +184,46 @@ model Rating {
   note        String  @default("")
 
   @@unique([sessionId, dimensionId])
+}
+
+/// v1: one uploaded media file (camera or screen). `path` is never exposed to clients.
+model RecordingSegment {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id])
+  sessionId   String
+  session     Session      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  /// camera | screen
+  stream      String
+  mimeType    String
+  /// Absolute file path under RECORDINGS_DIR.
+  path        String
+  startedAt   DateTime     @default(now())
+  endedAt     DateTime?
+  lastChunkAt DateTime?
+  bytes       BigInt       @default(0)
+  chunks      Int          @default(0)
+  /// Set once ffmpeg has rewritten the file so it is seekable.
+  remuxedAt   DateTime?
+  /// Set by the retention job once the file is gone. Deleted segments are never served or listed.
+  deletedAt   DateTime?
+
+  @@index([sessionId, startedAt])
+  @@index([orgId])
+}
+
+/// v1: integrity timeline reported by the candidate's browser. Counts, never content.
+model SessionEvent {
+  id          String    @id @default(cuid())
+  sessionId   String
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  type        String
+  /// Server receive time.
+  at          DateTime  @default(now())
+  clientAt    DateTime?
+  /// The question presented when the event was received (server-derived).
+  questionKey String?
+  detail      String?
+
+  @@index([sessionId, at])
 }

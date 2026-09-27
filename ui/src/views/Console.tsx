@@ -9,22 +9,30 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Flag,
   Play,
+  Plus,
   SkipForward,
   Square,
   RotateCcw,
+  Video,
+  X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import type { Kit, Question, ResponseRecord, Score, SectionDef, Session, UpdateResponse, Verdict } from '@contracts/api';
-import { api } from '../api/client';
-import { useKit, useSession, useSessionMutation } from '../api/hooks';
+import type { IntegrityEvent, Kit, Question, RecordingSegment, RecordingStream, ResponseRecord, Score, SectionDef, Session, UpdateResponse, Verdict } from '@contracts/api';
+import { api, recordingUrl } from '../api/client';
+import { useKit, useSession, useSessionMutation, useSessionPolling } from '../api/hooks';
 import { CodeBlock } from '../components/CodeBlock';
 import { CopyButton } from '../components/CopyButton';
 import { DatasetTable } from '../components/DatasetTable';
 import { Markdown } from '../components/Markdown';
 import { Countdown, Elapsed } from '../components/Timer';
-import { serverOffset } from '../lib/time';
+import { fmtClock, fmtDate, serverOffset, useTick } from '../lib/time';
+
+/** Events counted as integrity flags (matches SessionSummary.integrityFlags). */
+export const FLAG_TYPES = new Set<IntegrityEvent['type']>(['tab_hidden', 'window_blur', 'paste', 'screen_share_stopped', 'camera_stopped']);
+export const countFlags = (events: IntegrityEvent[]) => events.filter((e) => FLAG_TYPES.has(e.type)).length;
 
 export function Console() {
   const { id = '' } = useParams();
@@ -66,6 +74,9 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
   const offset = useMemo(() => serverOffset(session.serverNow, Date.now()), [session.serverNow]);
   const live = session.status === 'live';
   const presentedKey = session.presentedQuestionKey;
+  useSessionPolling(session.id, session.status === 'ready' || session.status === 'live');
+  const [flagsOpen, setFlagsOpen] = useState(false);
+  const [jump, setJump] = useState<{ at: string; nonce: number } | null>(null);
 
   const [selectedOverride, setSelected] = useState<string | null>(null);
   const selectedKey = selectedOverride ?? presentedKey ?? questions[0]?.key ?? null;
@@ -88,6 +99,7 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
   const patchMut = useSessionMutation(session.id, (body: { setNotes?: string; recommendation?: string | null }) =>
     api().updateSession(session.id, body),
   );
+  const extendMut = useSessionMutation(session.id, (minutes: number) => api().extendSession(session.id, { minutes }));
 
   const present = useCallback(
     (key: string | null) => {
@@ -175,12 +187,19 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
           </div>
           {verdict && <RunningTotal verdict={verdict} />}
           {verdict?.complete && <ResultChip verdict={verdict} />}
+          {session.sectionEndsAt && session.status !== 'completed' && <SectionCountdown endsAt={session.sectionEndsAt} offset={offset} />}
+          {session.status !== 'completed' && section.timeMinutes !== null && (
+            <button className="btn btn-sm" onClick={() => extendMut.mutate(5)} disabled={extendMut.isPending} title="Add 5 minutes to the section time limit" data-testid="extend">
+              <Plus size={12} /> 5 min{session.extensionMinutes > 0 ? ` (+${session.extensionMinutes})` : ''}
+            </button>
+          )}
           {presentedQ && presentedQ.timeMinutes !== null && (
             <div className="flex items-center gap-1 text-sm text-slate-600">
               <span>{presentedQ.key}</span>
               <Countdown timeMinutes={presentedQ.timeMinutes} presentedAt={session.presentedAt} offset={offset} />
             </div>
           )}
+          <RecordingChips session={session} offset={offset} onFlags={() => setFlagsOpen(true)} />
           <div className="ml-auto flex items-center gap-2">
             {session.status === 'ready' && (
               <button className="btn btn-primary" onClick={() => startMut.mutate()} disabled={startMut.isPending} data-testid="start">
@@ -216,12 +235,14 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
             </button>
           </div>
         )}
-        {(startMut.error || endMut.error || presentMut.error || respMut.error || ratingMut.error || patchMut.error) && (
+        {(startMut.error || endMut.error || presentMut.error || respMut.error || ratingMut.error || patchMut.error || extendMut.error) && (
           <p className="mt-2 text-sm text-red-700">
-            {(startMut.error ?? endMut.error ?? presentMut.error ?? respMut.error ?? ratingMut.error ?? patchMut.error)?.message}
+            {(startMut.error ?? endMut.error ?? presentMut.error ?? respMut.error ?? ratingMut.error ?? patchMut.error ?? extendMut.error)?.message}
           </p>
         )}
       </div>
+
+      {flagsOpen && <FlagsDrawer events={session.events} onClose={() => setFlagsOpen(false)} />}
 
       {section.interviewerNotes && (
         <details className="card px-4 py-2" open>
@@ -304,6 +325,11 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
               q={selected}
               reveal={reveal}
               setReveal={setReveal}
+              onJump={
+                session.recording.segments.length > 0 && response?.firstPresentedAt
+                  ? () => setJump({ at: response.firstPresentedAt!, nonce: Date.now() })
+                  : undefined
+              }
               countdown={
                 selected.key === presentedKey && selected.timeMinutes !== null ? (
                   <Countdown timeMinutes={selected.timeMinutes} presentedAt={session.presentedAt} offset={offset} large />
@@ -313,10 +339,12 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
           ) : (
             <p className="card p-4 text-sm text-slate-500">This section has no questions.</p>
           )}
+          {session.recording.segments.length > 0 && <RecordingsPanel session={session} offset={offset} jump={jump} />}
         </div>
 
         {/* Right column */}
         <div className="space-y-3">
+          {selected && section.candidateView && <AnswerPanel r={response} offset={offset} qKey={selected.key} />}
           {selected && response && (
             <ScoringPanel
               key={selected.key}
@@ -403,11 +431,13 @@ function QuestionPanel({
   reveal,
   setReveal,
   countdown,
+  onJump,
 }: {
   q: Question;
   reveal: Reveal;
   setReveal: (r: Reveal) => void;
   countdown: React.ReactNode;
+  onJump?: () => void;
 }) {
   const available: { k: keyof Reveal; label: string; present: boolean }[] = [
     { k: 'modelAnswer' as const, label: 'Model answer', present: !!q.modelAnswer },
@@ -421,8 +451,15 @@ function QuestionPanel({
     <div className="card p-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold">
-            <span className="font-mono text-slate-500">{q.key}</span> · {q.title}
+          <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+            <span>
+              <span className="font-mono text-slate-500">{q.key}</span> · {q.title}
+            </span>
+            {onJump && (
+              <button className="btn btn-sm font-normal" onClick={onJump} title="Seek the recordings to when this question was first presented" data-testid="jump">
+                <Video size={12} /> Jump to this question
+              </button>
+            )}
           </h2>
           <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
             <span className="chip bg-slate-100 text-slate-700">{q.domain}</span>
@@ -675,16 +712,19 @@ export function AutosaveTextarea({
   const [text, setText] = useState(value);
   const [state, setState] = useState<'idle' | 'pending' | 'saved'>('idle');
   const dirty = useRef(false);
+  const focused = useRef(false);
   const lastSent = useRef<string | null>(null);
+  const lastSentAt = useRef(0);
   const timer = useRef<number | undefined>(undefined);
   const latest = useRef(onSave);
   latest.current = onSave;
 
-  // Follow server updates while the user is not mid-edit, and ignore a stale value carried by
-  // another mutation's response while our own save is still in flight.
+  // Follow server updates (mutations and the 2 s poll) only while the field is neither focused
+  // nor dirty, and ignore a stale value carried by a response that raced our own recent save.
   useEffect(() => {
-    if (dirty.current) return;
-    if (lastSent.current === null || value === lastSent.current) setText(value);
+    if (dirty.current || focused.current) return;
+    if (lastSent.current !== null && value !== lastSent.current && Date.now() - lastSentAt.current < 5000) return;
+    setText(value);
   }, [value]);
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -697,6 +737,7 @@ export function AutosaveTextarea({
     timer.current = window.setTimeout(() => {
       dirty.current = false;
       lastSent.current = v;
+      lastSentAt.current = Date.now();
       latest.current(v);
       setState('saved');
     }, 600);
@@ -710,11 +751,16 @@ export function AutosaveTextarea({
         value={text}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
+        onFocus={() => {
+          focused.current = true;
+        }}
         onBlur={() => {
+          focused.current = false;
           if (dirty.current) {
             window.clearTimeout(timer.current);
             dirty.current = false;
             lastSent.current = text;
+            lastSentAt.current = Date.now();
             latest.current(text);
             setState('saved');
           }
@@ -726,4 +772,230 @@ export function AutosaveTextarea({
       </div>
     </div>
   );
+}
+
+// ---- v1: section time, recording chips, answer panel, flags drawer, recordings ------------------
+
+export function SectionCountdown({ endsAt, offset }: { endsAt: string; offset: number }) {
+  const now = useTick(true);
+  const remaining = (Date.parse(endsAt) - (now + offset)) / 1000;
+  if (remaining <= 0)
+    return (
+      <span className="font-mono text-lg font-semibold tabular-nums text-red-600" data-testid="section-countdown" data-over="1">
+        Time's up +{fmtClock(-remaining)}
+      </span>
+    );
+  return (
+    <span className={`text-sm ${remaining < 5 * 60 ? 'text-amber-600' : 'text-slate-600'}`} data-testid="section-countdown" data-over="0">
+      Section <span className="font-mono text-lg font-semibold tabular-nums">{fmtClock(remaining)}</span> left
+    </span>
+  );
+}
+
+type StreamState = 'live' | 'stalled' | 'ended' | 'none';
+
+export function latestSegment(segments: RecordingSegment[], stream: RecordingStream): RecordingSegment | null {
+  const of = segments.filter((s) => s.stream === stream);
+  return of.length ? of.reduce((a, b) => (a.startedAt > b.startedAt ? a : b)) : null;
+}
+
+function streamState(seg: RecordingSegment | null, nowServer: number): StreamState {
+  if (!seg) return 'none';
+  if (seg.endedAt) return 'ended';
+  if (seg.lastChunkAt && nowServer - Date.parse(seg.lastChunkAt) < 15_000) return 'live';
+  return 'stalled';
+}
+
+function RecordingChips({ session, offset, onFlags }: { session: Session; offset: number; onFlags: () => void }) {
+  const now = useTick(session.status !== 'completed');
+  const nowServer = now + offset;
+  const rec = session.recording;
+  const flags = countFlags(session.events);
+  const chip = (label: string, st: StreamState) => {
+    const cls = st === 'live' ? 'bg-emerald-100 text-emerald-800' : st === 'stalled' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600';
+    return (
+      <span className={`chip ${cls}`} data-testid={`chip-${label.toLowerCase()}`}>
+        {st === 'live' && <span className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-600" />}
+        {label} {st}
+      </span>
+    );
+  };
+  if (!rec.required && rec.segments.length === 0 && session.events.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {rec.required && (
+        <span className={`chip ${rec.consentAt ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`} data-testid="chip-consent" title={rec.consentAt ? `Consent at ${fmtDate(rec.consentAt)}` : 'The candidate has not accepted the recording notice yet'}>
+          {rec.consentAt ? 'Consent ✓' : 'Consent pending'}
+        </span>
+      )}
+      {(rec.required || rec.segments.length > 0) && chip('Camera', streamState(latestSegment(rec.segments, 'camera'), nowServer))}
+      {(rec.required || rec.segments.length > 0) && chip('Screen', streamState(latestSegment(rec.segments, 'screen'), nowServer))}
+      <button className={`chip ${flags > 0 ? 'bg-red-100 text-red-800 hover:bg-red-200' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`} onClick={onFlags} data-testid="chip-flags" title="Integrity events reported by the candidate's browser">
+        <Flag size={11} className="mr-1" /> Flags {flags}
+      </button>
+    </div>
+  );
+}
+
+function FlagsDrawer({ events, onClose }: { events: IntegrityEvent[]; onClose: () => void }) {
+  const rows = [...events].reverse();
+  return (
+    <div className="fixed inset-y-0 right-0 z-40 flex w-[30rem] max-w-full flex-col border-l border-slate-200 bg-white shadow-xl" data-testid="flags-drawer">
+      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2">
+        <h3 className="text-sm font-semibold">Integrity events · {countFlags(events)} flags of {events.length}</h3>
+        <button className="btn btn-sm" onClick={onClose} aria-label="Close">
+          <X size={14} />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {rows.length === 0 ? (
+          <p className="p-4 text-sm text-slate-500">No events yet.</p>
+        ) : (
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-slate-50 text-left uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-3 py-1.5">Time</th>
+                <th className="px-3 py-1.5">Type</th>
+                <th className="px-3 py-1.5">Question</th>
+                <th className="px-3 py-1.5">Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((e, i) => (
+                <tr key={i} className={`border-t border-slate-100 ${FLAG_TYPES.has(e.type) ? 'bg-red-50/60' : ''}`} data-testid={`event-${e.type}`}>
+                  <td className="px-3 py-1 font-mono tabular-nums">{new Date(e.at).toLocaleTimeString()}</td>
+                  <td className="px-3 py-1">{e.type}</td>
+                  <td className="px-3 py-1 font-mono">{e.questionKey ?? '—'}</td>
+                  <td className="px-3 py-1 text-slate-600">{e.detail ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ago(iso: string, nowServer: number): string {
+  const s = Math.max(0, Math.round((nowServer - Date.parse(iso)) / 1000));
+  if (s < 60) return `${s} s ago`;
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  return fmtDate(iso);
+}
+
+function AnswerPanel({ r, offset, qKey }: { r: ResponseRecord | null; offset: number; qKey: string }) {
+  const now = useTick(true);
+  const text = r?.candidateAnswer ?? null;
+  return (
+    <div className="card p-3" data-testid="answer-panel">
+      <div className="mb-1 flex items-baseline justify-between">
+        <h3 className="text-sm font-semibold">Candidate's answer · {qKey}</h3>
+        {text !== null && r?.candidateAnswerAt && <span className="text-[11px] text-slate-400">updated {ago(r.candidateAnswerAt, now + offset)}</span>}
+      </div>
+      {text ? (
+        <div className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-md border border-slate-100 bg-slate-50 p-2 text-sm" data-testid="answer-text-console">
+          {text}
+        </div>
+      ) : (
+        <p className="text-xs text-slate-400">No answer typed yet.</p>
+      )}
+    </div>
+  );
+}
+
+function coveringSegment(segments: RecordingSegment[], stream: RecordingStream, at: string): RecordingSegment | null {
+  const t = Date.parse(at);
+  const of = segments.filter((s) => s.stream === stream && Date.parse(s.startedAt) <= t && (s.endedAt === null || Date.parse(s.endedAt) >= t));
+  return of.length ? of.reduce((a, b) => (a.startedAt > b.startedAt ? a : b)) : null;
+}
+
+function RecordingsPanel({ session, offset, jump }: { session: Session; offset: number; jump: { at: string; nonce: number } | null }) {
+  const segs = session.recording.segments;
+  const [selected, setSelected] = useState<Record<RecordingStream, string | null>>({ camera: null, screen: null });
+  const [seekTo, setSeekTo] = useState<Record<RecordingStream, number | null>>({ camera: null, screen: null });
+  const now = useTick(session.status !== 'completed');
+
+  // "Jump to this question": pick the segment covering firstPresentedAt per stream, seek within it.
+  useEffect(() => {
+    if (!jump) return;
+    const next: Record<RecordingStream, string | null> = { camera: null, screen: null };
+    const seeks: Record<RecordingStream, number | null> = { camera: null, screen: null };
+    for (const stream of ['camera', 'screen'] as RecordingStream[]) {
+      const seg = coveringSegment(segs, stream, jump.at);
+      if (seg) {
+        next[stream] = seg.id;
+        seeks[stream] = Math.max(0, (Date.parse(jump.at) - Date.parse(seg.startedAt)) / 1000);
+      }
+    }
+    setSelected((cur) => ({ camera: next.camera ?? cur.camera, screen: next.screen ?? cur.screen }));
+    setSeekTo(seeks);
+  }, [jump, segs]);
+
+  const current = (stream: RecordingStream) => segs.find((s) => s.id === selected[stream]) ?? latestSegment(segs, stream);
+  return (
+    <div className="card p-3" data-testid="recordings">
+      <h3 className="mb-2 text-sm font-semibold">Recordings</h3>
+      <div className="grid grid-cols-2 gap-3">
+        {(['camera', 'screen'] as RecordingStream[]).map((stream) => {
+          const seg = current(stream);
+          return (
+            <div key={stream}>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">{stream}</div>
+              {seg ? (
+                <Player key={seg.id} sessionId={session.id} seg={seg} seekTo={seekTo[stream]} seekNonce={jump?.nonce ?? 0} />
+              ) : (
+                <div className="flex aspect-video items-center justify-center rounded-md bg-slate-100 text-xs text-slate-400">No {stream} recording</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <table className="mt-3 w-full text-xs">
+        <thead className="text-left uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className="py-1 pr-2">Stream</th>
+            <th className="py-1 pr-2">Started</th>
+            <th className="py-1 pr-2">Length</th>
+            <th className="py-1 pr-2">Chunks</th>
+            <th className="py-1 pr-2">Size</th>
+            <th className="py-1">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {[...segs]
+            .sort((a, b) => (a.startedAt < b.startedAt ? -1 : 1))
+            .map((s) => {
+              const end = s.endedAt ? Date.parse(s.endedAt) : now + offset;
+              const isSel = current(s.stream)?.id === s.id;
+              return (
+                <tr key={s.id} className={`cursor-pointer border-t border-slate-100 ${isSel ? 'bg-slate-50 font-medium' : 'hover:bg-slate-50'}`} onClick={() => setSelected((c) => ({ ...c, [s.stream]: s.id }))} data-testid={`segment-${s.stream}`}>
+                  <td className="py-1 pr-2">{s.stream}</td>
+                  <td className="py-1 pr-2">{new Date(s.startedAt).toLocaleTimeString()}</td>
+                  <td className="py-1 pr-2 font-mono tabular-nums">{fmtClock((end - Date.parse(s.startedAt)) / 1000)}</td>
+                  <td className="py-1 pr-2">{s.chunks}</td>
+                  <td className="py-1 pr-2">{(s.bytes / (1024 * 1024)).toFixed(1)} MB</td>
+                  <td className="py-1">{s.endedAt ? 'ended' : 'recording'}</td>
+                </tr>
+              );
+            })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Player({ sessionId, seg, seekTo, seekNonce }: { sessionId: string; seg: RecordingSegment; seekTo: number | null; seekNonce: number }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const v = ref.current;
+    if (!v || seekTo === null) return;
+    const apply = () => {
+      v.currentTime = seekTo;
+    };
+    if (v.readyState >= 1) apply();
+    else v.addEventListener('loadedmetadata', apply, { once: true });
+    return () => v.removeEventListener('loadedmetadata', apply);
+  }, [seekTo, seekNonce]);
+  return <video ref={ref} controls preload="metadata" src={recordingUrl(sessionId, seg.id)} className="aspect-video w-full rounded-md bg-slate-900" data-testid={`player-${seg.stream}`} />;
 }

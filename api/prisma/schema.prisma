@@ -1,0 +1,169 @@
+// talent-os — schema of record. Multi-org: every tenant-owned row carries orgId.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id         String        @id @default(cuid())
+  slug       String        @unique
+  name       String
+  createdAt  DateTime      @default(now())
+  jobs       Job[]
+  kits       Kit[]
+  candidates Candidate[]
+  apps       Application[]
+  sessions   Session[]
+}
+
+model Job {
+  id        String        @id @default(cuid())
+  orgId     String
+  org       Organization  @relation(fields: [orgId], references: [id])
+  title     String
+  location  String?
+  createdAt DateTime      @default(now())
+  kits      Kit[]
+  apps      Application[]
+
+  @@index([orgId])
+}
+
+model Kit {
+  id                    String       @id @default(cuid())
+  orgId                 String
+  org                   Organization @relation(fields: [orgId], references: [id])
+  jobId                 String
+  job                   Job          @relation(fields: [jobId], references: [id])
+  slug                  String
+  version               String
+  title                 String
+  candidateInstructions String
+  /// DimensionDef[]
+  dimensions            Json
+  /// SectionSeed[] (bands included; edited in-app)
+  sections              Json
+  createdAt             DateTime     @default(now())
+  questions             Question[]
+  sessions              Session[]
+
+  @@unique([orgId, slug, version])
+}
+
+model Question {
+  id                String  @id @default(cuid())
+  kitId             String
+  kit               Kit     @relation(fields: [kitId], references: [id], onDelete: Cascade)
+  key               String
+  section           String
+  stage             Int
+  number            Int
+  title             String
+  domain            String
+  difficulty        String?
+  mode              String
+  timeMinutes       Int?
+  prompt            String
+  dataset           Json?
+  code              Json?
+  modelAnswer       String?
+  rubric            Json?
+  trapOrBonus       String?
+  whatGoodLooksLike String?
+
+  @@unique([kitId, key])
+  @@index([kitId, section, number])
+}
+
+model Candidate {
+  id              String        @id @default(cuid())
+  orgId           String
+  org             Organization  @relation(fields: [orgId], references: [id])
+  name            String
+  email           String?
+  source          String?
+  notes           String?
+  overallDecision String?
+  level           String?
+  compNote        String?
+  createdAt       DateTime      @default(now())
+  apps            Application[]
+
+  @@index([orgId, createdAt])
+}
+
+model Application {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id])
+  candidateId String
+  candidate   Candidate    @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  jobId       String
+  job         Job          @relation(fields: [jobId], references: [id])
+  createdAt   DateTime     @default(now())
+  sessions    Session[]
+
+  @@unique([candidateId, jobId])
+  @@index([orgId])
+}
+
+model Session {
+  id                   String       @id @default(cuid())
+  orgId                String
+  org                  Organization @relation(fields: [orgId], references: [id])
+  applicationId        String
+  application          Application  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  /// Pins the kit version the session ran.
+  kitId                String
+  kit                  Kit          @relation(fields: [kitId], references: [id])
+  section              String
+  /// ready | live | completed
+  status               String       @default("ready")
+  interviewer          String
+  candidateToken       String       @unique
+  presentedQuestionKey String?
+  presentedAt          DateTime?
+  version              Int          @default(0)
+  setNotes             String       @default("")
+  recommendation       String?
+  createdAt            DateTime     @default(now())
+  startedAt            DateTime?
+  endedAt              DateTime?
+  responses            Response[]
+  ratings              Rating[]
+
+  @@index([orgId, applicationId])
+}
+
+model Response {
+  id               String   @id @default(cuid())
+  sessionId        String
+  session          Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionKey      String
+  score            Int?
+  notes            String   @default("")
+  trapNoticed      Boolean  @default(false)
+  bonusGiven       Boolean  @default(false)
+  skipped          Boolean  @default(false)
+  markedForReturn  Boolean  @default(false)
+  timeSpentSeconds Int      @default(0)
+  updatedAt        DateTime @updatedAt
+
+  @@unique([sessionId, questionKey])
+}
+
+model Rating {
+  id          String  @id @default(cuid())
+  sessionId   String
+  session     Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  dimensionId Int
+  rating      Int?
+  note        String  @default("")
+
+  @@unique([sessionId, dimensionId])
+}

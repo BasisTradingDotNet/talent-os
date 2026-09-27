@@ -30,11 +30,23 @@ export function useSession(id: string) {
   return useQuery({ queryKey: qk.session(id), queryFn: () => api().getSession(id), enabled: !!id, refetchOnWindowFocus: false });
 }
 
+/**
+ * Session mutations run one at a time per session, so responses arrive in order and the last
+ * full Session written to the cache always reflects every earlier change.
+ */
+const chains = new Map<string, Promise<unknown>>();
+function enqueue<T>(id: string, task: () => Promise<T>): Promise<T> {
+  const prev = chains.get(id) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(task);
+  chains.set(id, next);
+  return next;
+}
+
 /** Every session mutation returns the full Session: write it straight into the cache. */
 export function useSessionMutation<TArgs>(id: string, fn: (args: TArgs) => Promise<Session>) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: fn,
+    mutationFn: (args: TArgs) => enqueue(id, () => fn(args)),
     onSuccess: (session) => {
       qc.setQueryData(qk.session(id), session);
       void qc.invalidateQueries({ queryKey: qk.candidate(session.candidateId) });

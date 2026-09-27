@@ -57,6 +57,51 @@ export class CandidateViewController {
     return this.view.saveAnswer(await this.view.load(token), position, text);
   }
 
+  /** v1.2: multiple choice. Display position + display option index; null clears. */
+  @Put(':token/choice')
+  @Header('Cache-Control', 'no-store')
+  async choice(@Param('token') token: string, @Body() body: unknown): Promise<SavedAnswer> {
+    const o = asObject(body);
+    const position = o.position;
+    if (typeof position !== 'number' || !Number.isInteger(position) || position < 1) bad('position must be a positive integer');
+    const choice = o.choice;
+    if (choice !== null && (typeof choice !== 'number' || !Number.isInteger(choice) || choice < 0)) bad('choice must be a non-negative integer or null');
+    return this.view.saveChoice(await this.view.load(token), position, choice as number | null);
+  }
+
+  /** v1.2: self-paced sections — the candidate starts. */
+  @Post(':token/start')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  async start(@Param('token') token: string): Promise<CandidateState> {
+    await this.view.start(await this.view.load(token));
+    // Open on the candidate's first question (their own shuffled order) unless they're already on one.
+    const started = await this.view.load(token);
+    if (!started.session.presentedQuestionKey) await this.view.navigate(started, 1);
+    return this.view.state(await this.view.load(token));
+  }
+
+  /** v1.2: self-paced sections — the candidate moves to a displayed position. */
+  @Post(':token/navigate')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  async navigate(@Param('token') token: string, @Body() body: unknown): Promise<CandidateState> {
+    const o = asObject(body);
+    const position = o.position;
+    if (typeof position !== 'number' || !Number.isInteger(position) || position < 1) bad('position must be a positive integer');
+    await this.view.navigate(await this.view.load(token), position);
+    return this.view.state(await this.view.load(token));
+  }
+
+  /** v1.2: self-paced sections — the candidate submits (→ completed). */
+  @Post(':token/submit')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  async submit(@Param('token') token: string): Promise<CandidateState> {
+    await this.view.submit(await this.view.load(token));
+    return this.view.state(await this.view.load(token));
+  }
+
   @Post(':token/recordings')
   @HttpCode(201)
   async startRecording(@Param('token') token: string, @Body() body: unknown): Promise<StartedRecording> {

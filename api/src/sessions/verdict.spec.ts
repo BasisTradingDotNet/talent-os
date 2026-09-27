@@ -1,4 +1,4 @@
-import { computeVerdict, elapsedSeconds, VerdictQuestion, VerdictResponse } from './verdict';
+import { computeVerdict, elapsedSeconds, VerdictQuestion, VerdictResponse, autoScoreFor, computeAutoVerdict } from './verdict';
 
 const tenQuestions: VerdictQuestion[] = Array.from({ length: 10 }, (_, i) => ({
   key: `A${i + 1}`,
@@ -91,5 +91,50 @@ describe('elapsedSeconds', () => {
     expect(elapsedSeconds(t0, new Date('2026-09-27T12:00:04.999Z'))).toBe(4);
     expect(elapsedSeconds(t0, new Date('2026-09-27T12:03:30.000Z'))).toBe(210);
     expect(elapsedSeconds(t0, new Date('2026-09-27T11:59:59.000Z'))).toBe(0);
+  });
+});
+
+describe('computeAutoVerdict (v1.2)', () => {
+  const section = {
+    maxScore: null,
+    bands: [{ min: 2.5, label: 'Pass' }, { min: 4, label: 'Strong' }],
+    domainGroups: [{ domain: 'math' as const, label: 'Maths' }, { domain: 'probability' as const, label: 'Probability' }],
+    autoScoring: { correct: 1, wrong: -0.25, blank: 0 },
+  };
+  const questions = [
+    { key: 'M1', domain: 'math' },
+    { key: 'M2', domain: 'math' },
+    { key: 'M3', domain: 'math' },
+    { key: 'M4', domain: 'probability' },
+    { key: 'M5', domain: 'probability' },
+  ];
+
+  it('3 right, 1 wrong, 1 blank → 2.75 with per-domain subtotals; complete only when submitted or all answered', () => {
+    const responses = [
+      { questionKey: 'M1', choice: 0, autoScore: 1 },
+      { questionKey: 'M2', choice: 1, autoScore: 1 },
+      { questionKey: 'M3', choice: 2, autoScore: 1 },
+      { questionKey: 'M4', choice: 3, autoScore: -0.25 },
+      { questionKey: 'M5', choice: null, autoScore: null },
+      { questionKey: 'ZZ', choice: 0, autoScore: 1 }, // not in the section: ignored
+    ];
+    const v = computeAutoVerdict(section, questions, responses, false);
+    expect(v).toMatchObject({ total: 2.75, max: 5, scored: 4, skipped: 1, complete: false, result: 'Pass', band: { min: 2.5, label: 'Pass' } });
+    expect(v.subtotals).toEqual([
+      { domain: 'math', label: 'Maths', total: 3, max: 3 },
+      { domain: 'probability', label: 'Probability', total: -0.25, max: 2 },
+    ]);
+    expect(computeAutoVerdict(section, questions, responses, true).complete).toBe(true);
+    expect(computeAutoVerdict(section, questions, [], false)).toMatchObject({ total: 0, scored: 0, skipped: 5, complete: false, result: 'Below threshold' });
+    const all = responses.slice(0, 4).concat([{ questionKey: 'M5', choice: 0, autoScore: 1 }]);
+    expect(computeAutoVerdict(section, questions, all, false)).toMatchObject({ total: 3.75, complete: true, result: 'Pass' });
+  });
+
+  it('blanks count autoScoring.blank; autoScoreFor applies the marking scheme', () => {
+    const negBlank = { ...section, autoScoring: { correct: 2, wrong: -1, blank: -0.5 } };
+    expect(computeAutoVerdict(negBlank, questions, [{ questionKey: 'M1', choice: 0, autoScore: 2 }], false)).toMatchObject({ total: 0, max: 10 });
+    expect(autoScoreFor(negBlank.autoScoring, null, 1)).toBe(-0.5);
+    expect(autoScoreFor(negBlank.autoScoring, 1, 1)).toBe(2);
+    expect(autoScoreFor(negBlank.autoScoring, 0, 1)).toBe(-1);
   });
 });

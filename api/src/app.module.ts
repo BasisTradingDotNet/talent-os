@@ -10,6 +10,7 @@ import { ExportsController } from './exports/exports.controller';
 import { IdentityGuard, Public } from './identity/identity.guard';
 import { KitController } from './kit/kit.controller';
 import { KitService } from './kit/kit.service';
+import { MarketModule } from './market/market.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RecordingsService } from './recordings/recordings.service';
 import { SeedService } from './seed/seed.service';
@@ -26,7 +27,7 @@ export class HealthController {
 }
 
 @Module({
-  imports: [PrismaModule, ScheduleModule.forRoot()],
+  imports: [PrismaModule, ScheduleModule.forRoot(), MarketModule],
   controllers: [
     HealthController,
     KitController,

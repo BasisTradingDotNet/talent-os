@@ -13,6 +13,10 @@
  * any interviewer extensions; when it runs out the candidate's answers lock (15 s grace for the
  * final autosave). The interviewer ends the session; recording continues until then.
  *
+ * v1.2 (2026-09-27): multiple-choice (auto-scored, negative marking) and self-paced sections —
+ * the candidate starts, navigates and submits within the time limit — plus local transcription of
+ * recordings with AI-drafted interviewer notes (whisper.cpp + a local model; never a score).
+ *
  * Conventions
  * - JSON over HTTP, everything under /api.
  * - Timestamps are ISO-8601 UTC strings. IDs are opaque strings.
@@ -26,9 +30,24 @@
 // ---------------------------------------------------------------------------------------------
 
 export type SectionKey = string;
-export type Scoring = 'rubric' | 'dimensions';
-export type Domain = 'quant' | 'python' | 'screening' | 'judgement' | 'takehome';
-export type Mode = 'verbal' | 'sheet' | 'sheet-or-verbal' | 'sheet-and-verbal' | 'take-home';
+/**
+ * rubric = 0–3 by the interviewer; dimensions = 1–5 ratings; auto = multiple choice scored by the
+ * app (v1.2); market = make-a-market games, the interviewer trading against the candidate (v1.2).
+ */
+export type Scoring = 'rubric' | 'dimensions' | 'auto' | 'market';
+export type Domain =
+  | 'quant' | 'python' | 'screening' | 'judgement' | 'takehome'
+  | 'math' | 'probability' | 'statistics'; // v1.2
+export type Mode = 'verbal' | 'sheet' | 'sheet-or-verbal' | 'sheet-and-verbal' | 'take-home' | 'mcq' | 'market'; // mcq, market: v1.2
+
+/**
+ * v1.2: a make-a-market template (Question.market). NEVER sent to candidates.
+ * dice: the server rolls `dice` dice with `sides` sides when the game starts and reveals one die per
+ *   "reveal"; the true value is the sum. estimate: an uncertain quantity with a known answer.
+ */
+export type MarketConfig =
+  | { kind: 'dice'; dice: number; sides: number }
+  | { kind: 'estimate'; trueValue: number; unit: string; hints: string[] };
 export type Difficulty = 'easy' | 'medium' | 'hard';
 export type Score = 0 | 1 | 2 | 3;
 
@@ -47,6 +66,13 @@ export interface Rubric {
   '2': string;
   '1': string;
   '0': string;
+}
+
+/** v1.2: points per multiple-choice answer, e.g. { correct: 1, wrong: -0.25, blank: 0 }. */
+export interface AutoScoring {
+  correct: number;
+  wrong: number;
+  blank: number;
 }
 
 /** A section total >= min earns the label. Sorted ascending by min. Below every band = fail. */
@@ -92,6 +118,14 @@ export interface SectionDef {
   showInstructions: boolean;
   /** Markdown shown to the interviewer above the console (e.g. the take-home brief). */
   interviewerNotes: string | null;
+  /** v1.2: the candidate starts, navigates and submits on their own within timeMinutes. */
+  selfPaced: boolean;
+  /** v1.2: shuffle question order and choice order per session (fairness + leak resistance). */
+  shuffle: boolean;
+  /** v1.2: marking scheme for scoring 'auto'; null otherwise. */
+  autoScoring: AutoScoring | null;
+  /** v1.2: candidate instructions for this section; overrides Kit.candidateInstructions when set. */
+  candidateInstructions: string | null;
   /** Question keys in running order. */
   questionKeys: string[];
 }
@@ -119,6 +153,12 @@ export interface Question {
   trapOrBonus: string | null;
   /** Stage 1/4 guidance (markdown). Hidden by default in the console. */
   whatGoodLooksLike: string | null;
+  /** v1.2: multiple-choice options in canonical order (markdown). Null unless mode is 'mcq'. */
+  choices: string[] | null;
+  /** v1.2: index into `choices` of the correct option. NEVER sent to candidates. */
+  correctChoice: number | null;
+  /** v1.2: make-a-market template (mode 'market'); null otherwise. NEVER sent to candidates. */
+  market: MarketConfig | null;
 }
 
 export interface Kit {
@@ -168,6 +208,13 @@ export interface ResponseRecord {
   candidateAnswerAt: string | null;
   /** First time this question was presented; used to jump recordings to the question (v1). */
   firstPresentedAt: string | null;
+  /** v1.2: canonical index of the candidate's choice (mcq); null = blank. */
+  choice: number | null;
+  /** v1.2: points under section.autoScoring (auto sections); null for other sections. */
+  autoScore: number | null;
+  /** v1.2: AI-drafted note from the transcript + typed answer (local model). A draft, never a score. */
+  aiDraftNote: string | null;
+  aiDraftAt: string | null;
 }
 
 export interface DimensionRating {
@@ -185,6 +232,7 @@ export interface Subtotal {
 }
 
 export interface Verdict {
+  /** May be fractional for auto sections with negative marking (e.g. 13.75). */
   total: number;
   max: number;
   /** Questions with a score. */
@@ -239,6 +287,177 @@ export interface Session {
   sectionEndsAt: string | null;
   /** v1.1: minutes the interviewer has added (extra time, tech trouble, adjustments). */
   extensionMinutes: number;
+  /** v1.2: shuffled sections — question keys in the order this candidate sees them; else null. */
+  questionOrder: string[] | null;
+  /** v1.2: local transcription of the camera audio. */
+  transcript: SessionTranscript;
+  /** v1.2: make-a-market games (market sections only; null otherwise). */
+  market: SessionMarket | null;
+}
+
+// ---- v1.2: make-a-market (live; interviewer-driven) ---------------------------------------
+// The candidate keeps a two-sided quote (bid < ask, size) on the table. The interviewer buys at the
+// ask or sells at the bid, reveals information (a die, a hint) and finally settles against the true
+// value. P&L is from the CANDIDATE's side: they sold at the ask when the interviewer bought.
+
+export interface MarketQuote {
+  bid: number;
+  ask: number;
+  size: number;
+  at: string;
+  /** How many reveals had happened when this quote was made. */
+  revealsSoFar: number;
+}
+
+export interface MarketTrade {
+  /** Interviewer's side: 'buy' = lifted the candidate's ask; 'sell' = hit the candidate's bid. */
+  side: 'buy' | 'sell';
+  price: number;
+  size: number;
+  at: string;
+}
+
+export interface MarketMetrics {
+  quotes: number;
+  avgSpread: number;
+  /** dice only: share of quotes whose [bid, ask] contained the fair value at the time. */
+  fairInsideRate: number | null;
+  /** dice only: mean |mid − fair value| across quotes. */
+  meanMidError: number | null;
+  /** Share of trades after which the next quote moved away from the side that was hit. */
+  skewAfterTradeRate: number | null;
+  /** Final P&L to the candidate, settled at the true value. */
+  pnl: number;
+  /** Largest absolute position the candidate carried. */
+  maxAbsPosition: number;
+}
+
+export interface MarketGame {
+  id: string;
+  questionKey: string;
+  kind: 'dice' | 'estimate';
+  status: 'open' | 'settled';
+  startedAt: string;
+  settledAt: string | null;
+  /** Revealed information, in order: dice values ("4") or hint texts. */
+  reveals: string[];
+  /** Reveals still available (dice left to reveal / hints left). */
+  revealsRemaining: number;
+  quote: MarketQuote | null;
+  quotes: MarketQuote[];
+  trades: MarketTrade[];
+  /** Candidate's net position (+ = long). */
+  position: number;
+  /** INTERVIEWER ONLY: the true value (dice total rolled at start; estimate answer). */
+  trueValue: number;
+  /** dice only: expected value of the total given the reveals so far. */
+  fairValue: number | null;
+  /** Mark-to-true P&L so far (candidate's side). */
+  pnl: number;
+  /** Set when settled. */
+  metrics: MarketMetrics | null;
+}
+
+export interface SessionMarket {
+  games: MarketGame[];
+  activeGameId: string | null;
+}
+
+// POST /api/sessions/:id/market/games                      body: StartMarketGame → Session  (live; one open game at a time)
+// POST /api/sessions/:id/market/games/:gameId/trade        body: MarketTradeRequest → Session
+//        409 {reason:'no_quote'} when the candidate has no quote on the table.
+// POST /api/sessions/:id/market/games/:gameId/reveal                                → Session  (409 when none left)
+// POST /api/sessions/:id/market/games/:gameId/settle                                → Session
+// PUT  /api/candidate/:token/quote                         body: QuoteRequest → CandidateState
+//        400 unless bid < ask, both finite, size integer 1–100; 409 when no open game.
+
+export interface StartMarketGame {
+  questionKey: string;
+}
+
+export interface MarketTradeRequest {
+  side: 'buy' | 'sell';
+  /** Defaults to the quote's size; must not exceed it. */
+  size?: number;
+}
+
+export interface QuoteRequest {
+  bid: number;
+  ask: number;
+  size: number;
+}
+
+/** v1.2: the candidate's own view of the active (or last settled) game. Allowlisted. */
+export interface CandidateMarket {
+  gameNumber: number;
+  prompt: string;
+  unit: string | null;
+  reveals: string[];
+  status: 'open' | 'settled';
+  quote: { bid: number; ask: number; size: number } | null;
+  /** From the candidate's side: 'you_sold' when the interviewer bought. */
+  trades: { side: 'you_bought' | 'you_sold'; price: number; size: number; at: string }[];
+  position: number;
+  /** Only after settlement: the true value and the candidate's P&L. */
+  settlement: { value: number; pnl: number } | null;
+}
+
+// ---- v1.2: transcription ------------------------------------------------------------------
+
+export type TranscriptStatus = 'none' | 'pending' | 'processing' | 'done' | 'failed';
+
+export interface TranscriptLine {
+  /** Absolute times (segment start + offset). */
+  at: string;
+  end: string;
+  text: string;
+  /** The question presented at `at` (server-derived from firstPresentedAt order); null = intro. */
+  questionKey: string | null;
+}
+
+export interface SessionTranscript {
+  status: TranscriptStatus;
+  /** e.g. "whisper.cpp large-v3-turbo" and the note model, e.g. "qwen3.5:122b". */
+  model: string | null;
+  noteModel: string | null;
+  updatedAt: string | null;
+  error: string | null;
+  lines: TranscriptLine[];
+}
+
+// POST /api/sessions/:id/transcribe → Session   (queue or re-queue; 409 without camera recordings)
+// Ended recorded sessions are queued automatically.
+//
+// INTERNAL — the host-side transcription worker only. Reached on 127.0.0.1:4310 (never through
+// Cloudflare) with header `x-internal-token: $INTERNAL_API_TOKEN`; 401 otherwise.
+// POST /api/internal/transcription/claim                 → TranscriptionJob, or 204 when idle
+// GET  /api/internal/recordings/:segmentId/audio         → audio/wav, 16 kHz mono (ffmpeg)
+// POST /api/internal/transcription/:sessionId/result     body: TranscriptionResult → 204
+// POST /api/internal/transcription/:sessionId/fail       body: { error: string }   → 204
+
+export interface TranscriptionJob {
+  sessionId: string;
+  /** Camera segments (they carry the audio), oldest first. */
+  segments: { id: string; startedAt: string; endedAt: string | null }[];
+  questions: {
+    key: string;
+    title: string;
+    prompt: string;
+    modelAnswer: string | null;
+    rubric: Rubric | null;
+    whatGoodLooksLike: string | null;
+    candidateAnswer: string | null;
+    /** When the question was on screen: [firstPresentedAt, next question's firstPresentedAt or end). */
+    from: string | null;
+    to: string | null;
+  }[];
+}
+
+export interface TranscriptionResult {
+  model: string;
+  noteModel: string;
+  lines: { at: string; end: string; text: string }[];
+  notes: { questionKey: string; text: string }[];
 }
 
 // ---- v1: recording + integrity -------------------------------------------------------------
@@ -301,6 +520,7 @@ export interface IntegrityEvent {
 // POST  /api/sessions/:id/end                                           → Session   (→ completed)
 // POST  /api/sessions/:id/reopen                                        → Session   (completed → live)
 // POST  /api/sessions/:id/extend                  body: ExtendSession   → Session   (v1.1; ready or live)
+// v1.2: /start and /present return 409 {reason:'self_paced'} for self-paced sections — the candidate drives.
 // GET   /api/sessions/:id/recordings/:segmentId   → the media file (Content-Type = segment mimeType),
 //                                                   HTTP Range supported for seeking. PROTECTED.
 
@@ -444,6 +664,28 @@ export interface CandidateScorecard {
 //        Max 8 MB per chunk, 6 GB per session.
 // POST /api/candidate/:token/recordings/:segmentId/stop                  → 204
 // POST /api/candidate/:token/events                body: CandidateEvents → 204   (max 50 per call)
+// v1.2 — self-paced sections:
+// POST /api/candidate/:token/start                                       → CandidateState
+//        ready → live; 409 consent_required / devices_required (a camera AND a screen segment must
+//        have started) when recording is required.
+// POST /api/candidate/:token/navigate              body: Navigate        → CandidateState
+// POST /api/candidate/:token/submit                                      → CandidateState  (→ completed)
+//        Self-paced sessions are completed automatically ~60 s after sectionEndsAt.
+// v1.2 — multiple choice (self-paced: any position; live: presented now or earlier):
+// PUT  /api/candidate/:token/choice                body: SaveChoice      → SavedAnswer
+//        409 time_up after sectionEndsAt + 15 s; 409 not_live.
+
+export interface Navigate {
+  /** Displayed position, 1-based. */
+  position: number;
+}
+
+export interface SaveChoice {
+  /** Displayed position, 1-based. */
+  position: number;
+  /** Displayed option index, 0-based; null clears the answer (a blank scores autoScoring.blank). */
+  choice: number | null;
+}
 
 export interface ConsentRequest {
   accepted: true;
@@ -491,6 +733,8 @@ export interface CandidateRecording {
 export interface CandidateAnswer {
   text: string;
   savedAt: string | null;
+  /** v1.2: displayed index of the selected option; null = none (or not multiple choice). */
+  choice: number | null;
 }
 
 export type CandidatePhase = 'waiting' | 'intro' | 'question' | 'ended';
@@ -503,6 +747,8 @@ export interface CandidateQuestion {
   dataset: Dataset | null;
   code: CodeBlock | null;
   timeMinutes: number | null;
+  /** v1.2: options in THIS candidate's display order (markdown); null unless multiple choice. */
+  choices: string[] | null;
 }
 
 /**
@@ -528,6 +774,14 @@ export interface CandidateState {
   answer: CandidateAnswer | null;
   /** v1.1: section countdown target (same as Session.sectionEndsAt). Answers lock after it. */
   sectionEndsAt: string | null;
+  /** v1.2: the candidate drives start/navigation/submit. */
+  selfPaced: boolean;
+  /** v1.2: displayed positions the candidate has answered (their own data, for the navigator). */
+  answeredPositions: number[];
+  /** v1.2: the marking scheme, shown to the candidate up front; null for non-auto sections. */
+  marking: AutoScoring | null;
+  /** v1.2: market sections — the active or last settled game; null otherwise. */
+  market: CandidateMarket | null;
 }
 
 // GET /api/health → { ok: true }   (unauthenticated)

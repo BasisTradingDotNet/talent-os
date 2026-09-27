@@ -20,14 +20,16 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import type { IntegrityEvent, Kit, Question, RecordingSegment, RecordingStream, ResponseRecord, Score, SectionDef, Session, UpdateResponse, Verdict } from '@contracts/api';
+import type { AutoScoring, IntegrityEvent, Kit, Question, RecordingSegment, RecordingStream, ResponseRecord, Score, SectionDef, Session, UpdateResponse, Verdict } from '@contracts/api';
 import { api, recordingUrl } from '../api/client';
 import { useKit, useSession, useSessionMutation, useSessionPolling } from '../api/hooks';
 import { CodeBlock } from '../components/CodeBlock';
 import { CopyButton } from '../components/CopyButton';
 import { DatasetTable } from '../components/DatasetTable';
 import { Markdown } from '../components/Markdown';
+import { MarketConsolePanel } from '../market/MarketConsolePanel';
 import { Countdown, Elapsed } from '../components/Timer';
+import { fmtScore } from '../lib/summary';
 import { fmtClock, fmtDate, serverOffset, useTick } from '../lib/time';
 
 /** Events counted as integrity flags (matches SessionSummary.integrityFlags). */
@@ -57,6 +59,10 @@ const EMPTY_RESPONSE = (key: string): ResponseRecord => ({
   candidateAnswer: null,
   candidateAnswerAt: null,
   firstPresentedAt: null,
+  choice: null,
+  autoScore: null,
+  aiDraftNote: null,
+  aiDraftAt: null,
 });
 
 type Reveal = { modelAnswer: boolean; rubric: boolean; trap: boolean; good: boolean };
@@ -73,6 +79,9 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
   );
   const offset = useMemo(() => serverOffset(session.serverNow, Date.now()), [session.serverNow]);
   const live = session.status === 'live';
+  /** v1.2: self-paced sections — the candidate starts, navigates and submits; the console only observes. */
+  const selfPaced = section?.selfPaced ?? false;
+  const drives = live && !selfPaced;
   const presentedKey = session.presentedQuestionKey;
   useSessionPolling(session.id, session.status === 'ready' || session.status === 'live');
   const [flagsOpen, setFlagsOpen] = useState(false);
@@ -100,28 +109,30 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
     api().updateSession(session.id, body),
   );
   const extendMut = useSessionMutation(session.id, (minutes: number) => api().extendSession(session.id, { minutes }));
+  // Market calls return the full Session; route it through the cache like every other mutation.
+  const marketMut = useSessionMutation(session.id, (s: Session) => Promise.resolve(s));
 
   const present = useCallback(
     (key: string | null) => {
-      if (!live) return;
+      if (!drives) return;
       presentMut.mutate(key);
       setSelected(key);
     },
-    [live, presentMut],
+    [drives, presentMut],
   );
 
   /** Prev/Next follow the presented question while live (the normal flow); otherwise they just select. */
   const step = useCallback(
     (dir: -1 | 1) => {
-      const baseKey = live ? presentedKey : selectedKey;
+      const baseKey = drives ? presentedKey : selectedKey;
       const baseIdx = baseKey ? questions.findIndex((q) => q.key === baseKey) : -1;
       const nextIdx = baseIdx + dir;
       if (nextIdx < 0 || nextIdx >= questions.length) return;
       const key = questions[nextIdx].key;
-      if (live) present(key);
+      if (drives) present(key);
       else setSelected(key);
     },
-    [live, presentedKey, selectedKey, questions, present],
+    [drives, presentedKey, selectedKey, questions, present],
   );
 
   // Stable placeholder for untouched questions so the optimistic scoring panel is not reset each render.
@@ -162,7 +173,7 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
 
   if (!section) return <p className="p-4 text-sm text-red-700">Section {session.section} is not in the active kit.</p>;
 
-  const baseIdxForStep = live ? questions.findIndex((q) => q.key === presentedKey) : selectedIdx;
+  const baseIdxForStep = drives ? questions.findIndex((q) => q.key === presentedKey) : selectedIdx;
   const canPrev = baseIdxForStep > 0;
   const canNext = baseIdxForStep < questions.length - 1;
   const presentedQ = questions.find((q) => q.key === presentedKey) ?? null;
@@ -181,6 +192,11 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
             <span className="text-base text-slate-700">{section.label}</span>
           </div>
           <StatusChip status={session.status} />
+          {selfPaced && (
+            <span className="chip bg-violet-100 text-violet-800" title="The candidate starts, navigates and submits this section on their own" data-testid="candidate-paced">
+              Candidate-paced{live && presentedKey ? ` · on ${presentedKey}` : session.status === 'ready' ? ' · not started' : ''}
+            </span>
+          )}
           <div className="flex items-center gap-1 text-sm text-slate-600">
             <span>Elapsed</span>
             <Elapsed since={session.startedAt} until={session.endedAt} offset={offset} />
@@ -201,7 +217,7 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
           )}
           <RecordingChips session={session} offset={offset} onFlags={() => setFlagsOpen(true)} />
           <div className="ml-auto flex items-center gap-2">
-            {session.status === 'ready' && (
+            {session.status === 'ready' && !selfPaced && (
               <button className="btn btn-primary" onClick={() => startMut.mutate()} disabled={startMut.isPending} data-testid="start">
                 <Play size={14} /> Start
               </button>
@@ -292,18 +308,23 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
             <button className="btn btn-sm" onClick={() => step(1)} disabled={!canNext} title="Next (→)" data-testid="next">
               Next <ChevronRight size={14} />
             </button>
-            {live && selected && selectedKey !== presentedKey && (
+            {drives && selected && selectedKey !== presentedKey && (
               <button className="btn btn-sm btn-primary" onClick={() => present(selected.key)} data-testid="present">
                 <ArrowRight size={14} /> Present {selected.key}{section.candidateView ? ' to candidate' : ''}
               </button>
             )}
-            {live && presentedKey !== null && (
+            {drives && presentedKey !== null && (
               <button className="btn btn-sm" onClick={() => present(null)}>
                 <ArrowLeft size={14} /> Back to intro
               </button>
             )}
             {!live && <span className="text-xs text-slate-500">Session is {session.status}: navigation only selects.</span>}
             {live && presentedKey === null && <span className="text-xs text-slate-500">Candidate is on the intro screen.</span>}
+            {selfPaced && live && presentedKey && (
+              <span className="text-xs text-slate-500" data-testid="candidate-on">
+                Candidate-paced: the candidate is on <strong>{presentedKey}</strong>.
+              </span>
+            )}
             <span className="ml-auto text-[11px] text-slate-400" title="Shortcuts work when no text field has focus">
               Keys: {section.scoring === 'rubric' ? '0–3 score · ' : ''}←/→ prev/next
             </span>
@@ -320,9 +341,17 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
             </div>
           )}
 
+          {section.scoring === 'market' && (
+            <div className="mb-4">
+              <MarketConsolePanel session={session} kit={kit} onSession={(s) => marketMut.mutate(s)} />
+            </div>
+          )}
           {selected ? (
             <QuestionPanel
               q={selected}
+              r={response}
+              completed={session.status === 'completed'}
+              marking={section.scoring === 'auto' ? section.autoScoring : null}
               reveal={reveal}
               setReveal={setReveal}
               onJump={
@@ -405,12 +434,12 @@ export function RunningTotal({ verdict }: { verdict: Verdict }) {
   return (
     <span className="text-sm text-slate-700" data-testid="running-total">
       <strong>
-        {verdict.total}/{verdict.max}
+        {fmtScore(verdict.total)}/{verdict.max}
       </strong>
       {verdict.subtotals.map((s) => (
         <span key={s.domain}>
           {' · '}
-          {s.label} {s.total}/{s.max}
+          {s.label} {fmtScore(s.total)}/{s.max}
         </span>
       ))}
     </span>
@@ -428,19 +457,26 @@ export function ResultChip({ verdict }: { verdict: Verdict }) {
 
 function QuestionPanel({
   q,
+  r,
+  completed,
+  marking,
   reveal,
   setReveal,
   countdown,
   onJump,
 }: {
   q: Question;
+  r: ResponseRecord | null;
+  completed: boolean;
+  marking: AutoScoring | null;
   reveal: Reveal;
   setReveal: (r: Reveal) => void;
   countdown: React.ReactNode;
   onJump?: () => void;
 }) {
+  const mcq = q.choices !== null;
   const available: { k: keyof Reveal; label: string; present: boolean }[] = [
-    { k: 'modelAnswer' as const, label: 'Model answer', present: !!q.modelAnswer },
+    { k: 'modelAnswer' as const, label: mcq ? 'Correct answer & explanation' : 'Model answer', present: mcq || !!q.modelAnswer },
     { k: 'rubric' as const, label: 'Rubric', present: !!q.rubric },
     { k: 'trap' as const, label: 'Trap / bonus', present: !!q.trapOrBonus },
     { k: 'good' as const, label: 'What good looks like', present: !!q.whatGoodLooksLike },
@@ -493,8 +529,14 @@ function QuestionPanel({
             </button>
           </div>
           <div className="mt-3 space-y-3">
-            {reveal.modelAnswer && q.modelAnswer && (
+            {mcq && <McqOptions q={q} r={r} showCorrect={reveal.modelAnswer || completed} marking={marking} />}
+            {reveal.modelAnswer && q.modelAnswer && !mcq && (
               <Hidden title="Model answer">
+                <Markdown text={q.modelAnswer} className="text-sm" />
+              </Hidden>
+            )}
+            {mcq && (reveal.modelAnswer || completed) && q.modelAnswer && (
+              <Hidden title="Explanation">
                 <Markdown text={q.modelAnswer} className="text-sm" />
               </Hidden>
             )}
@@ -525,6 +567,43 @@ function QuestionPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** v1.2: multiple-choice options in canonical order; the candidate's pick is marked, the key only when revealed. */
+function McqOptions({ q, r, showCorrect, marking }: { q: Question; r: ResponseRecord | null; showCorrect: boolean; marking: AutoScoring | null }) {
+  const picked = r?.choice ?? null;
+  return (
+    <div data-testid="mcq-options">
+      <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
+        <span>Options (canonical order{showCorrect ? '; correct answer shown' : '; correct answer hidden'})</span>
+        {marking && (
+          <span data-testid="auto-score">
+            {picked === null ? 'Blank' : 'Answered'} · {r?.autoScore !== null && r?.autoScore !== undefined ? `${fmtScore(r.autoScore)} pt${Math.abs(r.autoScore) === 1 ? '' : 's'}` : `${fmtScore(marking.blank)} pts`}
+          </span>
+        )}
+      </div>
+      <ol className="space-y-1">
+        {q.choices!.map((opt, i) => {
+          const isPick = picked === i;
+          const isKey = showCorrect && q.correctChoice === i;
+          return (
+            <li
+              key={i}
+              className={`flex items-start gap-2 rounded-md border px-2 py-1.5 text-sm ${isKey ? 'border-emerald-400 bg-emerald-50' : isPick ? 'border-red-300 bg-red-50' : 'border-slate-200'}`}
+              data-testid={`option-${i}`}
+              data-picked={isPick ? '1' : '0'}
+              data-correct={isKey ? '1' : undefined}
+            >
+              <span className="w-5 shrink-0 font-mono text-xs text-slate-500">{String.fromCharCode(65 + i)}</span>
+              <Markdown text={opt} className="min-w-0 flex-1 text-sm" />
+              {isPick && <span className="chip bg-slate-900 text-white">candidate</span>}
+              {isKey && <span className="chip bg-emerald-600 text-white" data-testid="revealed-correct">correct</span>}
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }

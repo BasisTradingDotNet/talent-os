@@ -17,6 +17,7 @@ const BASE = process.env.UI_URL ?? 'http://127.0.0.1:5174';
 /** API_MODE=1: the UI proxies to a real API (opaque ids, no mock store to rewind for the time-up check). */
 const API_MODE = process.env.API_MODE === '1';
 const SHOT = (name) => `/tmp/talent-os-rec-${name}.png`;
+// v1.2 self-paced walk-through screenshots land in /tmp/talent-os-v12-*.png.
 const fails = [];
 const check = (cond, msg) => { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!cond) fails.push(msg); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -290,6 +291,107 @@ check(sc.includes('stdev = 0.114%') && sc.includes('7/8'), 'scorecard includes t
 await page.screenshot({ path: SHOT('scorecard'), fullPage: true });
 await page.goto(BASE + '/settings');
 await page.getByText('Set A — Easy (screening)').waitFor();
+
+// ---- v1.2: self-paced multiple-choice section (stage 0; synthetic section M exists in the MOCK only) --
+if (!API_MODE) {
+  const SHOT12 = (name) => `/tmp/talent-os-v12-${name}.png`;
+  await page.goto(BASE + candUrl);
+  await page.getByTestId('start-M').click();
+  await page.waitForURL(/\/sessions\/s\d+$/);
+  const mId = page.url().split('/').pop();
+  await page.getByTestId('candidate-paced').waitFor();
+  check((await page.getByTestId('start').count()) === 0 && (await page.getByTestId('present').count()) === 0, 'console: no Start/Present controls for a candidate-paced section');
+  check((await page.getByTestId('candidate-paced').innerText()).includes('Candidate-paced'), 'console shows Candidate-paced');
+  check(await page.getByTestId('extend').isVisible(), 'console keeps the +5 min button for a candidate-paced section');
+  const mUrl = await page.getByTestId('candidate-url').inputValue();
+  await cpage.goto(mUrl);
+  await cpage.getByTestId('consent').waitFor();
+  await cpage.getByTestId('consent-agree').check();
+  await cpage.getByTestId('consent-continue').click();
+  await cpage.getByTestId('devices').waitFor();
+  await cpage.getByTestId('camera-on').click();
+  await cpage.getByText('Camera and microphone are on.').waitFor();
+  await cpage.getByTestId('screen-share').click();
+  await cpage.getByTestId('self-paced-intro').waitFor();
+  const intro = await cpage.locator('body').innerText();
+  check(intro.includes('Correct +1 · Wrong −¼ · Blank 0'), 'intro shows the marking scheme');
+  check(intro.includes('Start test') && intro.includes('Submit test'), 'intro shows instructions and the Start button');
+  check(intro.includes('BTNET') && !intro.includes('G-20'), 'candidate sees BTNET, never G-20');
+  await cpage.screenshot({ path: SHOT12('intro'), fullPage: true });
+  await cpage.getByTestId('upload-status').filter({ hasText: 'uploads up to date' }).waitFor({ timeout: 15000 });
+  await cpage.getByTestId('start-test').click();
+  await cpage.getByTestId('question-heading').filter({ hasText: 'Question 1 of 4' }).waitFor();
+  check(await cpage.getByTestId('section-countdown').isVisible(), 'self-paced: section countdown runs after Start');
+  await page.getByTestId('candidate-on').waitFor({ timeout: 6000 });
+  check(true, 'console shows which question the candidate is on');
+  // Which displayed option is correct per position (from the mock store — never from the candidate page).
+  const key = await page.evaluate((id) => {
+    const s = JSON.parse(localStorage.getItem('talent-os-mock-v1'));
+    const row = s.sessions.find((x) => x.id === id);
+    const order = row.questionOrder ?? s.kit.sections.find((x) => x.key === row.section).questionKeys;
+    return order.map((k) => {
+      const q = s.kit.questions.find((x) => x.key === k);
+      const co = row.choiceOrders?.[k];
+      return co ? co.indexOf(q.correctChoice) : q.correctChoice;
+    });
+  }, mId);
+  const qtext = await cpage.locator('body').innerText();
+  for (const forbidden of ['M1', 'M2', 'M3', 'M4', 'Derivative of a cube', 'Sum of two dice', 'Sample mean', 'Base-2 logarithm', 'Explanation', 'correct', 'Test Candidate', 'G-20']) {
+    check(!qtext.includes(forbidden), `self-paced candidate view does NOT contain "${forbidden}"`);
+  }
+  check((await cpage.getByTestId('choices').locator('[role=radio]').count()) === 4, 'question shows 4 option cards');
+  await cpage.getByTestId(`choice-${key[0]}`).click(); // Q1 correct
+  await cpage.getByTestId('answer-status').filter({ hasText: 'Saved ✓' }).waitFor({ timeout: 5000 });
+  check((await cpage.getByTestId('nav-1').getAttribute('data-answered')) === '1', 'navigator marks Q1 answered');
+  await cpage.getByTestId('next').click();
+  await cpage.getByTestId('question-heading').filter({ hasText: 'Question 2 of 4' }).waitFor();
+  await cpage.getByTestId(`choice-${(key[1] + 1) % 4}`).click(); // Q2 wrong
+  await cpage.getByTestId('nav-3').click();
+  await cpage.getByTestId('question-heading').filter({ hasText: 'Question 3 of 4' }).waitFor();
+  await cpage.getByTestId(`choice-${key[2]}`).click(); // Q3 correct, then cleared
+  await cpage.waitForFunction(() => document.querySelector('[data-testid=nav-3]')?.getAttribute('data-answered') === '1');
+  await cpage.getByTestId('clear-answer').click();
+  await cpage.waitForFunction(() => document.querySelector('[data-testid=nav-3]')?.getAttribute('data-answered') === '0');
+  check(true, 'Clear answer un-marks Q3 in the navigator');
+  await cpage.getByTestId('nav-4').click();
+  await cpage.getByTestId('question-heading').filter({ hasText: 'Question 4 of 4' }).waitFor();
+  await cpage.getByTestId(`choice-${key[3]}`).click(); // Q4 correct
+  await cpage.getByTestId('prev').click();
+  await cpage.getByTestId('question-heading').filter({ hasText: 'Question 3 of 4' }).waitFor();
+  check((await cpage.locator('[data-testid=choices] [role=radio][aria-checked=true]').count()) === 0, 'Q3 stays cleared after navigating back');
+  await cpage.getByTestId('nav-1').click();
+  await cpage.getByTestId('question-heading').filter({ hasText: 'Question 1 of 4' }).waitFor();
+  check((await cpage.getByTestId(`choice-${key[0]}`).getAttribute('aria-checked')) === 'true', 'Q1 answer restored on return');
+  await cpage.screenshot({ path: SHOT12('candidate-question'), fullPage: true });
+  await page.getByTestId('candidate-on').filter({ hasText: 'is on' }).waitFor({ timeout: 6000 });
+  check((await page.getByTestId('revealed-correct').count()) === 0, 'console hides the correct option while live and unrevealed');
+  await page.screenshot({ path: SHOT12('console-live'), fullPage: true });
+  await cpage.getByTestId('submit-test').click();
+  await cpage.getByTestId('submit-dialog').waitFor();
+  check((await cpage.getByTestId('submit-summary').innerText()).includes('1 of 4 questions is unanswered'), 'submit dialog shows the unanswered count');
+  await cpage.screenshot({ path: SHOT12('submit-dialog') });
+  await cpage.getByTestId('submit-cancel').click();
+  await cpage.getByTestId('submit-dialog').waitFor({ state: 'hidden' });
+  await cpage.getByTestId('submit-test').click();
+  await cpage.getByTestId('submit-confirm').click();
+  await cpage.getByTestId('all-done').waitFor({ timeout: 20000 });
+  check(true, 'Submit → uploads flushed → All done');
+  await cpage.screenshot({ path: SHOT12('candidate-done') });
+  // 2 correct (+2), 1 wrong (−0.25), 1 blank (0) → 1.75/4
+  await page.getByTestId('result-chip').waitFor({ timeout: 8000 });
+  const mTotal = (await page.getByTestId('running-total').innerText()).replace(/\s+/g, ' ');
+  check(mTotal.includes('1.75/4'), 'console shows the fractional verdict: ' + mTotal);
+  check((await page.getByTestId('revealed-correct').count()) === 1, 'completed: the correct option is shown in the console');
+  check((await page.getByTestId('auto-score').count()) === 1, 'console shows the auto score for the selected question');
+  await page.screenshot({ path: SHOT12('console-verdict'), fullPage: true });
+  await page.goto(BASE + '/');
+  await page.getByText('Test Candidate').waitFor();
+  check((await page.locator('table').innerText()).includes('1.75/4'), 'comparison table shows 1.75/4');
+  await page.goto(BASE + candUrl + '/scorecard');
+  await page.getByText('Candidate scorecard').waitFor();
+  check((await page.locator('body').innerText()).includes('1.75 / 4'), 'printable scorecard shows 1.75 / 4');
+  await page.screenshot({ path: SHOT12('scorecard'), fullPage: true });
+}
 
 await browser.close();
 console.log(fails.length ? `\n${fails.length} FAILURES` : '\nALL PASS');

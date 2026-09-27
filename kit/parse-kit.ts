@@ -2,8 +2,12 @@
 /**
  * kit/parse-kit.ts — Markdown interview kit → KitSeed JSON.
  *
- *   node kit/parse-kit.ts <kit.md> <out.seed.json>
- *   node --test kit/*.test.ts               (tests, synthetic fixture only)
+ *   node kit/parse-kit.ts <kit.md> <out.seed.json> [--addon <records.md>]...
+ *   node --test kit/*.test.ts               (tests, synthetic fixtures only)
+ *
+ * Add-on files hold extra question records in the same layout (v1.1: the Stage 0 multiple-choice
+ * bank and the Stage 2 make-a-market bank). They need no index table; their sections are marked
+ * `addon: true` in the profile and are validated by count instead.
  *
  * Zero dependencies. Runs on Node's native type stripping, so only erasable TypeScript syntax
  * is used (no enums, namespaces or parameter properties). Real kits are confidential: nothing
@@ -14,12 +18,15 @@
  *   - id: … | stage: … | set: … | number: … | domain: … | difficulty: … | mode: … | time: N min
  *   **Prompt:** … **Dataset:** ```csv … **Code (python):** ```python … **Model answer:** …
  *   **Scoring:** 3 = … 2 = … 1 = … 0 = …  **Trap / bonus:** …  **What good looks like:** …
+ *   mcq records:    **Choices:** A. … B. … C. … D. …  **Answer:** C
+ *   market records: **Market:** ```json { "kind": "dice", … } ```
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { KitSeed, QuestionSeed, SectionSeed } from '../api/src/contracts/kit-seed.ts';
 import type {
+  AutoScoring,
   Band,
   CodeBlock,
   Dataset,
@@ -27,8 +34,10 @@ import type {
   DimensionDef,
   Domain,
   DomainGroup,
+  MarketConfig,
   Mode,
   Rubric,
+  Scoring,
 } from '../api/src/contracts/api.ts';
 
 // ---------------------------------------------------------------------------------------------
@@ -48,7 +57,7 @@ export interface SectionSpec {
   stage: number;
   label: string;
   candidateLabel: string;
-  scoring: 'rubric' | 'dimensions';
+  scoring: Scoring;
   timeMinutes: number | null;
   bands: Band[];
   dimensionIds: number[];
@@ -57,7 +66,17 @@ export interface SectionSpec {
   candidateView: boolean;
   showInstructions: boolean;
   notes: NotesSource | null;
+  /** v1.2 contract fields (see SectionDef). */
+  selfPaced: boolean;
+  shuffle: boolean;
+  autoScoring: AutoScoring | null;
+  candidateInstructions: string | null;
+  /** Records come from an `--addon` file, not the base kit: no index rows, checked by count. */
+  addon: boolean;
 }
+
+/** Defaults for sections whose records live in the base kit. */
+const KIT_SECTION = { selfPaced: false, shuffle: false, autoScoring: null, candidateInstructions: null, addon: false } as const;
 
 export interface TakeHomeSpec {
   section: string;
@@ -74,7 +93,10 @@ export interface TakeHomeSpec {
 
 export interface KitProfile {
   slug: string;
+  /** Seed version (what sessions pin). */
   version: string;
+  /** Version the base kit's markdown declares (`**Version X`); lower than `version` once add-ons extend it. */
+  baseVersion: string;
   title: string;
   orgName: string;
   job: { title: string; location: string | null };
@@ -111,12 +133,32 @@ function stage2Set(key: string, label: string, candidateLabel: string, timeMinut
     candidateView: true,
     showInstructions: true,
     notes: null,
+    ...KIT_SECTION,
   };
 }
 
+const MCQ_MARKING: AutoScoring = { correct: 1, wrong: -0.25, blank: 0 };
+
+const MCQ_INSTRUCTIONS = [
+  '**Aptitude test — 20 questions, 30 minutes.**',
+  '',
+  'Each question has one correct option. Marking: **+1** for a correct answer, **−0.25** for a wrong answer, **0** for a blank — so only guess when you can rule options out.',
+  '',
+  'You can move between questions freely and change answers until you submit or the time runs out. Pen and paper allowed. No calculators, spreadsheets, search or AI assistants. Your camera, microphone and screen are recorded.',
+].join('\n');
+
+const MARKET_INSTRUCTIONS = [
+  '**Market-making exercise — about 20 minutes, live with the interviewer.**',
+  '',
+  'For each game you will be asked to make a market on a quantity: quote a **bid** (the price you will buy at), an **ask** (the price you will sell at) and a **size**. The interviewer may buy from you at your ask or sell to you at your bid, as many times as they like. As the game goes on, information will be revealed — update your quotes as it arrives. At the end the true value is revealed and your P&L is settled against it.',
+  '',
+  'Keep your quotes honest and tight: centre them on what you believe the value is, widen when you are uncertain, and tighten as you learn more. Think aloud — how you reason matters as much as the number.',
+].join('\n');
+
 export const QUANT_TRADER_PROFILE: KitProfile = {
   slug: 'quant-trader',
-  version: '1.0',
+  version: '1.1',
+  baseVersion: '1.0',
   title: 'Quant Trader Interview Kit — Basis Trading Desk, BTNET',
   orgName: 'BTNET',
   job: { title: 'Quant Trader — Basis Trading Desk', location: 'India, remote' },
@@ -125,6 +167,30 @@ export const QUANT_TRADER_PROFILE: KitProfile = {
   extraDimensions: [{ id: 8, name: 'Leadership view' }],
   indexHeading: '9.1',
   sections: [
+    {
+      key: 'M',
+      stage: 0,
+      label: 'Stage 0 — Aptitude test (MCQ)',
+      candidateLabel: 'Aptitude test',
+      scoring: 'auto',
+      timeMinutes: 30,
+      bands: [{ min: 12, label: 'Pass' }],
+      dimensionIds: [],
+      recommendationOptions: [],
+      domainGroups: [
+        { domain: 'math', label: 'Maths' },
+        { domain: 'probability', label: 'Probability' },
+        { domain: 'statistics', label: 'Statistics' },
+      ],
+      candidateView: true,
+      showInstructions: true,
+      notes: null,
+      selfPaced: true,
+      shuffle: true,
+      autoScoring: MCQ_MARKING,
+      candidateInstructions: MCQ_INSTRUCTIONS,
+      addon: true,
+    },
     {
       key: 'S1',
       stage: 1,
@@ -139,6 +205,7 @@ export const QUANT_TRADER_PROFILE: KitProfile = {
       candidateView: false,
       showInstructions: false,
       notes: { kind: 'intro', heading: '4.' },
+      ...KIT_SECTION,
     },
     stage2Set('A', 'Set A — Easy (screening)', 'Written test — Part A', 40, [
       { min: 24, label: 'Pass — progress to Set B' },
@@ -148,6 +215,26 @@ export const QUANT_TRADER_PROFILE: KitProfile = {
       { min: 15, label: 'Strong hire signal' },
       { min: 20, label: 'Exceptional' },
     ]),
+    {
+      key: 'X',
+      stage: 2,
+      label: 'Stage 2 — Make a market (live)',
+      candidateLabel: 'Market-making exercise',
+      scoring: 'market',
+      timeMinutes: 20,
+      bands: [],
+      dimensionIds: [],
+      recommendationOptions: [],
+      domainGroups: [],
+      candidateView: true,
+      showInstructions: true,
+      notes: null,
+      selfPaced: false,
+      shuffle: false,
+      autoScoring: null,
+      candidateInstructions: MARKET_INSTRUCTIONS,
+      addon: true,
+    },
     {
       key: 'T',
       stage: 3,
@@ -162,6 +249,7 @@ export const QUANT_TRADER_PROFILE: KitProfile = {
       candidateView: false,
       showInstructions: false,
       notes: { kind: 'range', from: '6.1', to: '6.3' },
+      ...KIT_SECTION,
     },
     {
       key: 'S4',
@@ -177,6 +265,7 @@ export const QUANT_TRADER_PROFILE: KitProfile = {
       candidateView: false,
       showInstructions: false,
       notes: { kind: 'intro', heading: '7.' },
+      ...KIT_SECTION,
     },
   ],
   takeHome: {
@@ -195,7 +284,7 @@ export const QUANT_TRADER_PROFILE: KitProfile = {
     ],
     rubricHeading: '3.1',
   },
-  expectedCounts: { S1: 8, A: 10, B: 10, C: 10, T: 6, S4: 7 },
+  expectedCounts: { M: 20, S1: 8, A: 10, B: 10, C: 10, X: 8, T: 6, S4: 7 },
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -389,15 +478,74 @@ export function parseNumberedList(text: string): string[] {
   return items;
 }
 
+/** "A. text" lines (contiguous letters from A, 2–8 options) → choice texts. */
+export function parseChoices(text: string): string[] {
+  const choices: string[] = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = /^([A-H])\.\s+(.+)$/.exec(line);
+    if (!m) fail(`Expected a choice line like "A. text", got "${line}"`);
+    if (m[1] !== String.fromCharCode(65 + choices.length)) fail(`Choices are not lettered contiguously from A at "${line}"`);
+    choices.push(m[2].trim());
+  }
+  if (choices.length < 2) fail('A multiple-choice question needs at least two choices');
+  const seen = new Set<string>();
+  for (const c of choices) {
+    if (seen.has(c)) fail(`Duplicate choice "${c}"`);
+    seen.add(c);
+  }
+  return choices;
+}
+
+/** "C" → 0-based index into `choices`. Exactly one letter. */
+export function parseAnswer(text: string, choices: string[]): number {
+  const t = text.trim();
+  if (!/^[A-H]$/.test(t)) fail(`Answer must be a single option letter, got "${t}"`);
+  const i = t.charCodeAt(0) - 65;
+  if (i >= choices.length) fail(`Answer "${t}" is outside the ${choices.length} choices`);
+  return i;
+}
+
+/** Fenced JSON → MarketConfig with every field checked. */
+export function parseMarketConfig(json: string): MarketConfig {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch (e) {
+    return fail(`Market config is not valid JSON: ${(e as Error).message}`);
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) fail('Market config must be a JSON object');
+  const obj = raw as Record<string, unknown>;
+  const keys = Object.keys(obj).sort().join(',');
+  const isInt = (v: unknown, min: number) => typeof v === 'number' && Number.isInteger(v) && v >= min;
+  if (obj.kind === 'dice') {
+    if (keys !== 'dice,kind,sides') fail(`Dice market must have exactly kind, dice, sides; got ${keys}`);
+    if (!isInt(obj.dice, 1)) fail('Dice market: "dice" must be an integer >= 1');
+    if (!isInt(obj.sides, 2)) fail('Dice market: "sides" must be an integer >= 2');
+    return { kind: 'dice', dice: obj.dice as number, sides: obj.sides as number };
+  }
+  if (obj.kind === 'estimate') {
+    if (keys !== 'hints,kind,trueValue,unit') fail(`Estimate market must have exactly kind, trueValue, unit, hints; got ${keys}`);
+    if (typeof obj.trueValue !== 'number' || !Number.isFinite(obj.trueValue)) fail('Estimate market: "trueValue" must be a finite number');
+    if (typeof obj.unit !== 'string' || !obj.unit.trim()) fail('Estimate market: "unit" must be a non-empty string');
+    const hints = obj.hints;
+    if (!Array.isArray(hints) || hints.length === 0 || hints.some((h) => typeof h !== 'string' || !h.trim()))
+      fail('Estimate market: "hints" must be a non-empty array of non-empty strings');
+    return { kind: 'estimate', trueValue: obj.trueValue, unit: obj.unit, hints: [...(hints as string[])] };
+  }
+  return fail(`Market config kind must be "dice" or "estimate", got ${JSON.stringify(obj.kind)}`);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Question records
 // ---------------------------------------------------------------------------------------------
 
 const RECORD_HEADING_RE = /^(\S+) · (.+)$/;
 const LABEL_RE = /^\*\*([^*]+?):\*\*\s*(.*)$/;
-const TEXT_LABELS = ['Prompt', 'Model answer', 'Scoring', 'Trap / bonus', 'What good looks like'];
-const MODES: Mode[] = ['verbal', 'sheet', 'sheet-or-verbal', 'sheet-and-verbal', 'take-home'];
-const DOMAINS: Domain[] = ['quant', 'python', 'screening', 'judgement', 'takehome'];
+const TEXT_LABELS = ['Prompt', 'Model answer', 'Scoring', 'Trap / bonus', 'What good looks like', 'Choices', 'Answer'];
+const MODES: Mode[] = ['verbal', 'sheet', 'sheet-or-verbal', 'sheet-and-verbal', 'take-home', 'mcq', 'market'];
+const DOMAINS: Domain[] = ['quant', 'python', 'screening', 'judgement', 'takehome', 'math', 'probability', 'statistics'];
 const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard'];
 
 interface Fence {
@@ -607,7 +755,20 @@ function buildQuestion(rec: RawRecord, index: Map<string, IndexRow>, profile: Ki
   const known = new Set(TEXT_LABELS);
   let dataset: Dataset | null = null;
   let code: CodeBlock | null = null;
+  let market: MarketConfig | null = null;
   for (const [label, block] of blocks) {
+    if (label === 'Market') {
+      if (!block.fence) fail(`${id}: Market block has no code fence`);
+      if (block.text) fail(`${id}: Market block has text outside its fence`);
+      if (block.fence.lang && block.fence.lang !== 'json') fail(`${id}: Market fence language must be json, got "${block.fence.lang}"`);
+      try {
+        market = parseMarketConfig(block.fence.lines.join('\n'));
+      } catch (e) {
+        if (e instanceof KitParseError) fail(`${id}: ${e.message}`);
+        throw e;
+      }
+      continue;
+    }
     if (label === 'Dataset') {
       if (!block.fence) fail(`${id}: Dataset block has no code fence`);
       if (block.text) fail(`${id}: Dataset block has text outside its fence`);
@@ -640,6 +801,29 @@ function buildQuestion(rec: RawRecord, index: Map<string, IndexRow>, profile: Ki
   if (!prompt) fail(`${id}: missing Prompt`);
   const scoring = text('Scoring');
 
+  let choices: string[] | null = null;
+  let correctChoice: number | null = null;
+  const choicesText = text('Choices');
+  const answerText = text('Answer');
+  if (mode === 'mcq') {
+    if (choicesText === null) fail(`${id}: mcq record has no Choices block`);
+    if (answerText === null) fail(`${id}: mcq record has no Answer block`);
+    if (scoring !== null) fail(`${id}: mcq records are marked automatically; remove the Scoring block`);
+    try {
+      choices = parseChoices(choicesText);
+      correctChoice = parseAnswer(answerText, choices);
+    } catch (e) {
+      if (e instanceof KitParseError) fail(`${id}: ${e.message}`);
+      throw e;
+    }
+  } else if (choicesText !== null || answerText !== null) {
+    fail(`${id}: Choices/Answer blocks are only allowed on mcq records (mode is "${mode}")`);
+  }
+  if (mode === 'market') {
+    if (!market) fail(`${id}: market record has no Market block`);
+    if (scoring !== null) fail(`${id}: market records are settled against the true value; remove the Scoring block`);
+  } else if (market) fail(`${id}: Market block is only allowed on market records (mode is "${mode}")`);
+
   return {
     key: id,
     section,
@@ -657,6 +841,9 @@ function buildQuestion(rec: RawRecord, index: Map<string, IndexRow>, profile: Ki
     rubric: scoring === null ? null : splitRubric(scoring),
     trapOrBonus: text('Trap / bonus'),
     whatGoodLooksLike: text('What good looks like'),
+    choices,
+    correctChoice,
+    market,
   };
 }
 
@@ -683,18 +870,24 @@ function buildTakeHome(doc: Doc, profile: KitProfile): QuestionSeed[] {
     rubric: { ...rubric },
     trapOrBonus: null,
     whatGoodLooksLike: null,
+    choices: null,
+    correctChoice: null,
+    market: null,
   }));
 }
 
-/** Parse a whole kit. Throws KitParseError with a clear message on any structural problem. */
-export function parseKit(markdown: string, profile: KitProfile = QUANT_TRADER_PROFILE): KitSeed {
+/**
+ * Parse a whole kit plus any add-on record files. Throws KitParseError with a clear message on any
+ * structural problem.
+ */
+export function parseKit(markdown: string, profile: KitProfile = QUANT_TRADER_PROFILE, addons: string[] = []): KitSeed {
   const doc = parseDoc(markdown);
 
   const h1 = doc.headings.find((h) => h.level === 1);
   if (!h1) fail('Kit has no top-level "# Title" heading');
   if (h1.text !== profile.title) fail(`Kit title "${h1.text}" does not match profile title "${profile.title}"`);
   const vm = /\*\*Version (\S+)/.exec(markdown);
-  if (vm && vm[1] !== profile.version) fail(`Kit says version ${vm[1]} but profile says ${profile.version}`);
+  if (vm && vm[1] !== profile.baseVersion) fail(`Kit says version ${vm[1]} but profile says base version ${profile.baseVersion}`);
 
   const candidateInstructions = bodyText(doc, numberedHeading(doc, profile.instructionsHeading));
   if (!candidateInstructions) fail('Candidate instructions are empty');
@@ -704,14 +897,27 @@ export function parseKit(markdown: string, profile: KitProfile = QUANT_TRADER_PR
   const indexRows = parseIndex(bodyText(doc, numberedHeading(doc, profile.indexHeading)));
   const index = new Map(indexRows.map((r) => [r.id, r]));
 
-  const records = extractRecords(markdown);
+  const addonSections = new Set(profile.sections.filter((s) => s.addon).map((s) => s.key));
   const seenKeys = new Set<string>();
   const questions: QuestionSeed[] = [];
-  for (const rec of records) {
+  for (const rec of extractRecords(markdown)) {
     if (seenKeys.has(rec.id)) fail(`Duplicate question id ${rec.id}`);
     seenKeys.add(rec.id);
-    questions.push(buildQuestion(rec, index, profile));
+    const q = buildQuestion(rec, index, profile);
+    if (addonSections.has(q.section)) fail(`${q.key}: section ${q.section} is an add-on section; move the record to an --addon file`);
+    questions.push(q);
   }
+  addons.forEach((addon, i) => {
+    const recs = extractRecords(addon);
+    if (recs.length === 0) fail(`Add-on file ${i + 1} contains no question records`);
+    for (const rec of recs) {
+      if (seenKeys.has(rec.id)) fail(`Duplicate question id ${rec.id}`);
+      seenKeys.add(rec.id);
+      const q = buildQuestion(rec, index, profile);
+      if (!addonSections.has(q.section)) fail(`${q.key}: section ${q.section} is not an add-on section`);
+      questions.push(q);
+    }
+  });
   for (const q of buildTakeHome(doc, profile)) {
     if (seenKeys.has(q.key)) fail(`Duplicate question id ${q.key}`);
     seenKeys.add(q.key);
@@ -723,8 +929,8 @@ export function parseKit(markdown: string, profile: KitProfile = QUANT_TRADER_PR
 
   const sections: SectionSeed[] = profile.sections.map((s) => {
     const count = questions.filter((q) => q.section === s.key).length;
-    const { notes, ...rest } = s;
-    return { ...rest, maxScore: s.scoring === 'rubric' ? count * 3 : null, interviewerNotes: resolveNotes(doc, notes) };
+    const { notes, addon: _addon, ...rest } = s;
+    return { ...rest, maxScore: maxScoreFor(s, count), interviewerNotes: resolveNotes(doc, notes) };
   });
 
   const seed: KitSeed = {
@@ -742,11 +948,18 @@ export function parseKit(markdown: string, profile: KitProfile = QUANT_TRADER_PR
   return seed;
 }
 
+/** rubric: n × 3; auto: n × points per correct answer; dimensions and market: none. */
+function maxScoreFor(s: SectionSpec, count: number): number | null {
+  if (s.scoring === 'rubric') return count * 3;
+  if (s.scoring === 'auto') return count * (s.autoScoring?.correct ?? 0);
+  return null;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------------------------
 
-const LEFTOVER_RE = /\*\*(?:Prompt|Dataset|Code(?: \([^)]*\))?|Model answer|Scoring|Trap \/ bonus|What good looks like):\*\*|```/;
+const LEFTOVER_RE = /\*\*(?:Prompt|Dataset|Code(?: \([^)]*\))?|Model answer|Scoring|Trap \/ bonus|What good looks like|Choices|Answer|Market):\*\*|```/;
 
 function checkLeftovers(where: string, value: string | null) {
   if (value !== null && LEFTOVER_RE.test(value)) fail(`${where} contains a leftover label or code fence`);
@@ -756,21 +969,35 @@ function checkLeftovers(where: string, value: string | null) {
 export function validateSeed(seed: KitSeed, indexRows: IndexRow[], profile: KitProfile): void {
   const sectionByKey = new Map(seed.sections.map((s) => [s.key, s]));
   const dimIds = new Set(seed.dimensions.map((d) => d.id));
+  const specByKey = new Map(profile.sections.map((s) => [s.key, s]));
   for (const s of seed.sections) {
     for (const id of s.dimensionIds) if (!dimIds.has(id)) fail(`Section ${s.key} rates unknown dimension ${id}`);
     checkLeftovers(`Section ${s.key} interviewerNotes`, s.interviewerNotes);
+    checkLeftovers(`Section ${s.key} candidateInstructions`, s.candidateInstructions);
+    if (s.scoring === 'auto') {
+      if (!s.autoScoring) fail(`Section ${s.key}: auto-scored section needs autoScoring`);
+      if (s.autoScoring.correct <= 0) fail(`Section ${s.key}: autoScoring.correct must be positive`);
+      if (s.timeMinutes === null) fail(`Section ${s.key}: auto-scored section needs a time limit`);
+    } else if (s.autoScoring) fail(`Section ${s.key}: only auto-scored sections carry autoScoring`);
+    if (s.shuffle && s.scoring !== 'auto') fail(`Section ${s.key}: only auto-scored sections may shuffle`);
+    if (s.scoring === 'market' && s.bands.length) fail(`Section ${s.key}: market sections have no bands`);
+    if ((s.scoring === 'dimensions' || s.scoring === 'market') && s.maxScore !== null)
+      fail(`Section ${s.key}: ${s.scoring} sections have no maxScore`);
   }
   checkLeftovers('candidateInstructions', seed.candidateInstructions);
 
   // Numbers contiguous 1..n per section, in array order.
   for (const s of seed.sections) {
     const nums = seed.questions.filter((q) => q.section === s.key).map((q) => q.number);
-    if (nums.length === 0) fail(`Section ${s.key} has no questions`);
+    if (nums.length === 0)
+      fail(`Section ${s.key} has no questions${specByKey.get(s.key)?.addon ? ' (pass its records with --addon)' : ''}`);
     nums.forEach((n, i) => {
       if (n !== i + 1) fail(`Section ${s.key}: question numbers are not contiguous (got ${nums.join(', ')})`);
     });
     if (s.scoring === 'rubric' && s.maxScore !== nums.length * 3)
       fail(`Section ${s.key}: maxScore ${s.maxScore} != ${nums.length} questions × 3`);
+    if (s.scoring === 'auto' && s.maxScore !== nums.length * s.autoScoring!.correct)
+      fail(`Section ${s.key}: maxScore ${s.maxScore} != ${nums.length} questions × ${s.autoScoring!.correct}`);
   }
 
   // Per-question checks.
@@ -780,12 +1007,36 @@ export function validateSeed(seed: KitSeed, indexRows: IndexRow[], profile: KitP
     if (q.stage !== s.stage) fail(`${q.key}: stage ${q.stage} != section ${s.key} stage ${s.stage}`);
     if (!q.prompt.trim()) fail(`${q.key}: empty prompt`);
     if (!q.title.trim()) fail(`${q.key}: empty title`);
-    if (s.scoring === 'rubric') {
+    if (s.domainGroups.length && !s.domainGroups.some((g) => g.domain === q.domain))
+      fail(`${q.key}: domain "${q.domain}" is not one of section ${s.key}'s domain groups (${s.domainGroups.map((g) => g.domain).join(', ')})`);
+    // Mode ↔ section scoring ↔ v1.2 fields.
+    if (s.scoring === 'auto' && q.mode !== 'mcq') fail(`${q.key}: auto-scored section ${s.key} only takes mcq records`);
+    if (s.scoring === 'market' && q.mode !== 'market') fail(`${q.key}: market section ${s.key} only takes market records`);
+    if (q.mode === 'mcq') {
+      if (s.scoring !== 'auto') fail(`${q.key}: mcq record in a ${s.scoring} section`);
+      if (!q.choices || q.choices.length < 2) fail(`${q.key}: mcq record needs at least two choices`);
+      if (q.correctChoice === null || !Number.isInteger(q.correctChoice) || q.correctChoice < 0 || q.correctChoice >= q.choices.length)
+        fail(`${q.key}: correctChoice must index one of the ${q.choices.length} choices`);
+      if (q.choices.some((c) => !c.trim())) fail(`${q.key}: empty choice`);
+      if (new Set(q.choices).size !== q.choices.length) fail(`${q.key}: duplicate choices`);
+      if (q.difficulty === null) fail(`${q.key}: mcq record needs a difficulty`);
+    } else if (q.choices !== null || q.correctChoice !== null) fail(`${q.key}: choices/correctChoice only on mcq records`);
+    if (q.mode === 'market') {
+      if (s.scoring !== 'market') fail(`${q.key}: market record in a ${s.scoring} section`);
+      if (!q.market) fail(`${q.key}: market record needs a market config`);
+      parseMarketConfig(JSON.stringify(q.market)); // shape
+    } else if (q.market !== null) fail(`${q.key}: market config only on market records`);
+    if (s.scoring === 'auto' || s.scoring === 'market') {
+      if (q.rubric) fail(`${q.key}: ${s.scoring} section question must not carry a rubric`);
+      if (!(q.modelAnswer ?? '').trim()) fail(`${q.key}: missing model answer`);
+      for (const c of q.choices ?? []) checkLeftovers(`${q.key} choice`, c);
+      for (const h of q.market?.kind === 'estimate' ? q.market.hints : []) checkLeftovers(`${q.key} hint`, h);
+    } else if (s.scoring === 'rubric') {
       if (!q.rubric) fail(`${q.key}: rubric section question without a rubric`);
       for (const k of ['3', '2', '1', '0'] as const)
         if (!q.rubric[k] || !q.rubric[k].trim()) fail(`${q.key}: rubric level ${k} is empty`);
       if (q.section !== profile.takeHome.section && !(q.modelAnswer ?? '').trim()) fail(`${q.key}: missing model answer`);
-    } else {
+    } else if (s.scoring === 'dimensions') {
       if (q.rubric || q.modelAnswer || q.trapOrBonus)
         fail(`${q.key}: dimension-scored question must not carry rubric/model answer/trap`);
       if (!(q.whatGoodLooksLike ?? '').trim()) fail(`${q.key}: missing "What good looks like"`);
@@ -832,8 +1083,8 @@ export function validateSeed(seed: KitSeed, indexRows: IndexRow[], profile: KitP
     if (mismatches.length) fail(`${row.id} does not match its index row — ${mismatches.join('; ')}`);
   }
   for (const q of seed.questions) {
-    if (q.section !== profile.takeHome.section && !indexRows.some((r) => r.id === q.key))
-      fail(`${q.key} has no row in the index table`);
+    if (q.section === profile.takeHome.section || specByKey.get(q.section)?.addon) continue;
+    if (!indexRows.some((r) => r.id === q.key)) fail(`${q.key} has no row in the index table`);
   }
 }
 
@@ -870,18 +1121,43 @@ export function summarise(seed: KitSeed): string {
   const withCode = seed.questions.filter((q) => q.code).map((q) => q.key);
   lines.push(`  datasets (${withDataset.length}): ${withDataset.join(', ') || '—'}`);
   lines.push(`  code     (${withCode.length}): ${withCode.join(', ') || '—'}`);
+  const mcq = seed.questions.filter((q) => q.mode === 'mcq');
+  const markets = seed.questions.filter((q) => q.mode === 'market');
+  const tally = (qs: QuestionSeed[], key: (q: QuestionSeed) => string) => {
+    const c: Record<string, number> = {};
+    for (const q of qs) c[key(q)] = (c[key(q)] ?? 0) + 1;
+    return Object.entries(c).map(([k, v]) => `${k} ${v}`).join(', ');
+  };
+  if (mcq.length) lines.push(`  mcq      (${mcq.length}): ${tally(mcq, (q) => q.domain)}; ${tally(mcq, (q) => q.difficulty ?? '?')}`);
+  if (markets.length) lines.push(`  market   (${markets.length}): ${tally(markets, (q) => q.market!.kind)}`);
   return lines.join('\n');
 }
 
+/** `<kit.md> <out.json> [--addon <file>]...` → paths, or null on a usage error. */
+export function parseArgs(argv: string[]): { input: string; output: string; addons: string[] } | null {
+  const positional: string[] = [];
+  const addons: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--addon') {
+      if (!argv[i + 1]) return null;
+      addons.push(argv[++i]);
+    } else if (argv[i].startsWith('--')) return null;
+    else positional.push(argv[i]);
+  }
+  if (positional.length !== 2) return null;
+  return { input: positional[0], output: positional[1], addons };
+}
+
 function main(argv: string[]): number {
-  const [input, output] = argv;
-  if (!input || !output) {
-    console.error('usage: node kit/parse-kit.ts <kit.md> <out.seed.json>');
+  const args = parseArgs(argv);
+  if (!args) {
+    console.error('usage: node kit/parse-kit.ts <kit.md> <out.seed.json> [--addon <records.md>]...');
     return 2;
   }
+  const { input, output, addons } = args;
   try {
     const markdown = readFileSync(resolve(input), 'utf8');
-    const seed = parseKit(markdown, QUANT_TRADER_PROFILE);
+    const seed = parseKit(markdown, QUANT_TRADER_PROFILE, addons.map((a) => readFileSync(resolve(a), 'utf8')));
     assertCounts(seed, QUANT_TRADER_PROFILE.expectedCounts);
     writeFileSync(resolve(output), JSON.stringify(seed, null, 2) + '\n');
     console.log(summarise(seed));

@@ -14,6 +14,7 @@ import json
 import re
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -22,8 +23,8 @@ EMAIL = os.environ.get("EMAIL", "smoke@basistrading.net")
 AUTH = {"cf-access-authenticated-user-email": EMAIL}
 
 STATE_KEYS = {"phase", "orgName", "sectionLabel", "instructions", "question", "presentedAt", "serverNow", "version",
-              "recording", "answer", "sectionEndsAt"}
-QUESTION_KEYS = {"position", "total", "prompt", "dataset", "code", "timeMinutes"}
+              "recording", "answer", "sectionEndsAt", "selfPaced", "answeredPositions", "marking", "market"}
+QUESTION_KEYS = {"position", "total", "prompt", "dataset", "code", "timeMinutes", "choices"}
 
 failures = []
 
@@ -43,12 +44,17 @@ def call(method, path, body=None, auth=True, expect=200):
     if body is not None:
         data = json.dumps(body).encode()
         req.add_header("content-type", "application/json")
-    try:
-        with urllib.request.urlopen(req, data=data, timeout=15) as r:
-            raw = r.read().decode()
-            status = r.status
-    except urllib.error.HTTPError as e:
-        raw, status = e.read().decode(), e.code
+    for attempt in range(8):
+        try:
+            with urllib.request.urlopen(req, data=data, timeout=15) as r:
+                raw = r.read().decode()
+                status = r.status
+        except urllib.error.HTTPError as e:
+            raw, status = e.read().decode(), e.code
+            if status == 429 and attempt < 7:  # per-token rate limit: honour Retry-After like the real client
+                time.sleep(float(e.headers.get("Retry-After") or 1))
+                continue
+        break
     ok = (200 <= status < 300) if expect < 300 else status == expect
     if not ok:
         raise AssertionError(f"{method} {path} → {status} (expected {expect}): {raw[:300]}")
@@ -112,7 +118,7 @@ def recorded_flow(cid, section):
     first = section["questionKeys"][0]
     call("POST", f"/api/sessions/{sid}/present", {"questionKey": first}, expect=201)
     st = call("GET", f"{cand}/state", auth=False)
-    check("[rec] section countdown set", bool(st["sectionEndsAt"]) and set(st["answer"] or {}) == {"text", "savedAt"}, str(st.get("answer")))
+    check("[rec] section countdown set", bool(st["sectionEndsAt"]) and set(st["answer"] or {}) == {"text", "savedAt", "choice"}, str(st.get("answer")))
     call("PUT", f"{cand}/answer", {"position": 1, "text": "mean 0.042, sharpe ~13 but meaningless"}, auth=False)
     status, _, _ = call_raw("PUT", f"{cand}/answer", json.dumps({"position": 3, "text": "x"}).encode(),
                             {"content-type": "application/json"})
@@ -140,6 +146,80 @@ def recorded_flow(cid, section):
     call("POST", f"/api/sessions/{sid}/end", expect=201)
 
 
+MARKET_KEYS = {"gameNumber", "prompt", "unit", "reveals", "status", "quote", "trades", "position", "settlement"}
+
+
+def mcq_flow(cid, section, kit):
+    """v1.2: self-paced multiple choice with negative marking; the answer key never reaches the candidate."""
+    sk = section["key"]
+    qs = {q["key"]: q for q in kit["questions"] if q["section"] == sk}
+    sess = call("POST", "/api/sessions", {"candidateId": cid, "section": sk, "recordingRequired": False}, expect=201)
+    sid, token = sess["id"], sess["candidateUrl"].rsplit("/c/", 1)[1]
+    cand = f"/api/candidate/{token}"
+    status, _, _ = call_raw("POST", f"/api/sessions/{sid}/start", b"", auth=True)
+    check(f"[{sk}] interviewer can't drive a self-paced section (409)", status == 409, str(status))
+    call("POST", f"{cand}/start", {}, auth=False)
+    order = call("GET", f"/api/sessions/{sid}")["questionOrder"] or section["questionKeys"]
+    n = len(order)
+    marking = section["autoScoring"]
+    expected = 0.0
+    for pos in range(1, n + 1):
+        st = call("POST", f"{cand}/navigate", {"position": pos}, auth=False)
+        q = qs[order[pos - 1]]
+        blob = json.dumps(st)
+        leaks = [f for f in ("correctChoice", "modelAnswer") if f in blob]
+        leaks += [t for t in (q["title"], q.get("modelAnswer") or "") if t and len(t) >= 8 and t in blob]
+        shown = st["question"]["choices"]
+        ok = set(st) == STATE_KEYS and set(st["question"]) == QUESTION_KEYS and sorted(shown) == sorted(q["choices"]) and not leaks
+        check(f"[{sk}] pos {pos} shows only its options, no key", ok, f"leaks={leaks}")
+        correct_text = q["choices"][q["correctChoice"]]
+        if pos <= 3:
+            pick, expected = shown.index(correct_text), expected + marking["correct"]
+        elif pos == 4:
+            pick, expected = next(i for i, c in enumerate(shown) if c != correct_text), expected + marking["wrong"]
+        else:
+            pick, expected = None, expected + marking["blank"]
+        if pick is not None:
+            call("PUT", f"{cand}/choice", {"position": pos, "choice": pick}, auth=False)
+    st = call("POST", f"{cand}/submit", {}, auth=False)
+    check(f"[{sk}] submitted → ended", st["phase"] == "ended")
+    v = call("GET", f"/api/sessions/{sid}")["verdict"]
+    check(f"[{sk}] negative marking total = {expected}", abs(v["total"] - expected) < 1e-9 and v["complete"], json.dumps(v))
+
+
+def market_flow(cid, section, kit):
+    """v1.2: make-a-market — quote, trade, reveal, settle; no true value before settlement."""
+    sk = section["key"]
+    templates = [q for q in kit["questions"] if q["section"] == sk and q.get("market")]
+    dice = next(q for q in templates if q["market"]["kind"] == "dice")
+    sess = call("POST", "/api/sessions", {"candidateId": cid, "section": sk, "recordingRequired": False}, expect=201)
+    sid, token = sess["id"], sess["candidateUrl"].rsplit("/c/", 1)[1]
+    cand = f"/api/candidate/{token}"
+    call("POST", f"/api/sessions/{sid}/start", expect=201)
+    s = call("POST", f"/api/sessions/{sid}/market/games", {"questionKey": dice["key"]}, expect=201)
+    game = s["market"]["games"][-1]
+    st = call("GET", f"{cand}/state", auth=False)
+    m = st["market"] or {}
+    blob = json.dumps(st)
+    check(f"[{sk}] candidate sees the market, not the truth", set(m) == MARKET_KEYS and m["settlement"] is None
+          and "trueValue" not in blob and "fairValue" not in blob, json.dumps(m)[:200])
+    call("PUT", f"{cand}/quote", {"bid": 9, "ask": 12, "size": 1}, auth=False)
+    status, _, _ = call_raw("PUT", f"{cand}/quote", json.dumps({"bid": 12, "ask": 9, "size": 1}).encode(),
+                            {"content-type": "application/json"})
+    check(f"[{sk}] crossed quote refused (400)", status == 400, str(status))
+    s = call("POST", f"/api/sessions/{sid}/market/games/{game['id']}/trade", {"side": "buy"}, expect=201)
+    g = s["market"]["games"][-1]
+    check(f"[{sk}] interviewer lifted the ask: candidate short 1 @ 12", g["position"] == -1 and g["trades"][0]["price"] == 12)
+    call("POST", f"/api/sessions/{sid}/market/games/{game['id']}/reveal", expect=201)
+    s = call("POST", f"/api/sessions/{sid}/market/games/{game['id']}/settle", expect=201)
+    g = s["market"]["games"][-1]
+    check(f"[{sk}] settled P&L = 12 − true value", g["status"] == "settled" and abs(g["metrics"]["pnl"] - (12 - g["trueValue"])) < 1e-9,
+          json.dumps(g.get("metrics")))
+    st = call("GET", f"{cand}/state", auth=False)
+    check(f"[{sk}] candidate sees settlement after settle", (st["market"] or {}).get("settlement", {}) and
+          st["market"]["settlement"]["value"] == g["trueValue"])
+
+
 def main():
     check("health", call("GET", "/api/health", auth=False).get("ok") is True)
     me = call("GET", "/api/me")
@@ -155,7 +235,8 @@ def main():
     cid = cand["id"]
     check("candidate created", cand["name"] == "Smoke Test")
 
-    for section in [s for s in kit["sections"] if s["candidateView"]]:
+    live_rubric = [s for s in kit["sections"] if s["candidateView"] and s["scoring"] == "rubric" and not s.get("selfPaced")]
+    for section in live_rubric:
         sk = section["key"]
         sess = call("POST", "/api/sessions", {"candidateId": cid, "section": sk}, expect=201)
         sid, url = sess["id"], sess["candidateUrl"]
@@ -206,9 +287,13 @@ def main():
             sess = call("PATCH", f"/api/sessions/{sess['id']}", {"recommendation": section["recommendationOptions"][0]})
         check(f"[{sk}] ratings saved", len([r for r in sess["ratings"] if r["rating"] == 4]) == len(section["dimensionIds"]))
 
-    rec_sections = [s for s in kit["sections"] if s["candidateView"]]
-    if rec_sections:
-        recorded_flow(cid, rec_sections[0])
+    if live_rubric:
+        recorded_flow(cid, live_rubric[0])
+    for section in kit["sections"]:
+        if section["scoring"] == "auto" and section.get("selfPaced"):
+            mcq_flow(cid, section, kit)
+        if section["scoring"] == "market":
+            market_flow(cid, section, kit)
 
     call("GET", "/api/candidate/not-a-real-token/state", auth=False, expect=404)
     check("unknown token → 404", True)

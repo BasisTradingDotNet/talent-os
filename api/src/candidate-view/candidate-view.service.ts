@@ -11,8 +11,12 @@ import type { CandidateState, IntegrityEventType, RecordingStream } from '../con
 import type { SectionSeed } from '../contracts/kit-seed';
 import { cfg } from '../common/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { MarketService } from '../market/market.service';
 import { RecordingsService } from '../recordings/recordings.service';
+import { choiceOrderFor, inDisplayOrder, toCanonicalChoice, toDisplayChoice } from '../sessions/ordering';
+import { applyEnd, applyPresent } from '../sessions/sessions.service';
 import { sectionEndsAt } from '../sessions/timing';
+import { autoScoreFor } from '../sessions/verdict';
 import { buildCandidateState, CandidateStateQuestion } from './candidate-state';
 import {
   ANSWER_GRACE_AFTER_END_MS,
@@ -42,6 +46,8 @@ const TOKEN_SESSION_SELECT = {
   recordingRequired: true,
   consentAt: true,
   extensionMinutes: true,
+  questionOrder: true,
+  choiceOrders: true,
   org: { select: { name: true } },
   kit: { select: { candidateInstructions: true, sections: true } },
 } satisfies Prisma.SessionSelect;
@@ -54,6 +60,11 @@ export interface TokenSession {
   section: SectionSeed;
 }
 
+/** A display-ordered question with its server-side choice mapping (display index → canonical). */
+interface DisplayQuestion extends CandidateStateQuestion {
+  choiceOrder: number[] | null;
+}
+
 export interface EventInput {
   type: IntegrityEventType;
   clientAt: Date | null;
@@ -64,7 +75,11 @@ export interface EventInput {
 export class CandidateViewService {
   private readonly logger = new Logger(CandidateViewService.name);
 
-  constructor(private readonly prisma: PrismaService, private readonly recordings: RecordingsService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly recordings: RecordingsService,
+    private readonly market: MarketService,
+  ) {}
 
   /** 404 for unknown tokens and for sections without a candidate view. Never reveals which. */
   async load(token: string): Promise<TokenSession> {
@@ -76,20 +91,41 @@ export class CandidateViewService {
     return { session, section };
   }
 
-  /** Only the allowlisted question columns, in running order. */
-  private async questions(ts: TokenSession): Promise<CandidateStateQuestion[]> {
+  /**
+   * Only the allowlisted question columns, in THIS candidate's display order (v1.2: shuffled
+   * sections). `choiceOrder` (display → canonical) stays server-side for mapping answers back.
+   */
+  private async questions(ts: TokenSession): Promise<DisplayQuestion[]> {
     const rows = await this.prisma.question.findMany({
       where: { kitId: ts.session.kitId, section: ts.session.section },
-      select: { key: true, prompt: true, dataset: true, code: true, timeMinutes: true },
+      select: { key: true, prompt: true, dataset: true, code: true, timeMinutes: true, mode: true, choices: true },
       orderBy: { number: 'asc' },
     });
-    return rows.map((q) => ({
-      key: q.key,
-      prompt: q.prompt,
-      dataset: (q.dataset as { format: 'csv'; text: string } | null) ?? null,
-      code: (q.code as { language: string; text: string } | null) ?? null,
-      timeMinutes: q.timeMinutes ?? null,
-    }));
+    const canonical = rows.map((q) => {
+      const choices = q.mode === 'mcq' && Array.isArray(q.choices) ? (q.choices as unknown[]).map((c) => String(c)) : null;
+      const choiceOrder = choices ? choiceOrderFor(ts.session.choiceOrders, q.key, choices.length) : null;
+      return {
+        key: q.key,
+        prompt: q.prompt,
+        dataset: (q.dataset as { format: 'csv'; text: string } | null) ?? null,
+        code: (q.code as { language: string; text: string } | null) ?? null,
+        timeMinutes: q.timeMinutes ?? null,
+        choices: choices && choiceOrder ? choiceOrder.map((ci) => choices[ci]) : choices,
+        choiceOrder,
+      };
+    });
+    return inDisplayOrder(canonical, ts.session.questionOrder);
+  }
+
+  private stateSection(ts: TokenSession) {
+    const sec = ts.section;
+    return {
+      candidateLabel: sec.candidateLabel,
+      showInstructions: !!sec.showInstructions,
+      selfPaced: !!sec.selfPaced,
+      autoScoring: sec.scoring === 'auto' && sec.autoScoring ? sec.autoScoring : null,
+      candidateInstructions: sec.candidateInstructions ?? null,
+    };
   }
 
   endsAt(ts: TokenSession): Date | null {
@@ -98,30 +134,148 @@ export class CandidateViewService {
 
   async state(ts: TokenSession, now = new Date()): Promise<CandidateState> {
     const s = ts.session;
-    const presented = s.presentedQuestionKey
-      ? await this.prisma.response.findUnique({
-          where: { sessionId_questionKey: { sessionId: s.id, questionKey: s.presentedQuestionKey } },
-          select: { candidateAnswer: true, candidateAnswerAt: true },
-        })
-      : null;
+    const questions = await this.questions(ts);
+    const responses = await this.prisma.response.findMany({
+      where: { sessionId: s.id },
+      select: { questionKey: true, candidateAnswer: true, candidateAnswerAt: true, choice: true },
+    });
+    const byKey = new Map(responses.map((r) => [r.questionKey, r]));
+    const answeredPositions: number[] = [];
+    questions.forEach((q, i) => {
+      const r = byKey.get(q.key);
+      if (r && ((r.choice !== null && r.choice !== undefined) || (r.candidateAnswer ?? '').trim() !== '')) answeredPositions.push(i + 1);
+    });
+    const presentedQ = s.presentedQuestionKey ? questions.find((q) => q.key === s.presentedQuestionKey) : undefined;
+    const presented = presentedQ ? byKey.get(presentedQ.key) : undefined;
+    const sectionQuestions: CandidateStateQuestion[] = questions.map((q) => ({
+      key: q.key,
+      prompt: q.prompt,
+      dataset: q.dataset,
+      code: q.code,
+      timeMinutes: q.timeMinutes,
+      choices: q.choices,
+    }));
+    const market = await this.market.candidateMarket(s.id);
     return buildCandidateState({
+      market,
       orgName: cfg().candidateBrand ?? s.org.name,
-      section: { candidateLabel: ts.section.candidateLabel, showInstructions: !!ts.section.showInstructions },
+      section: this.stateSection(ts),
       candidateInstructions: s.kit.candidateInstructions,
       status: s.status,
       presentedQuestionKey: s.presentedQuestionKey,
       presentedAt: s.presentedAt,
       version: s.version,
-      sectionQuestions: await this.questions(ts),
+      sectionQuestions,
       now,
       recordingRequired: s.recordingRequired,
       consentAt: s.consentAt,
       retentionDays: cfg().recordingRetentionDays,
-      presentedAnswer: presented
-        ? { candidateAnswer: presented.candidateAnswer, candidateAnswerAt: presented.candidateAnswerAt }
+      presentedAnswer: presented && presentedQ
+        ? {
+            candidateAnswer: presented.candidateAnswer,
+            candidateAnswerAt: presented.candidateAnswerAt,
+            displayChoice:
+              presented.choice !== null && presented.choice !== undefined ? toDisplayChoice(presentedQ.choiceOrder, presented.choice) : null,
+          }
         : null,
       sectionEndsAt: this.endsAt(ts),
+      answeredPositions,
     });
+  }
+
+  private assertNotTimeUp(ts: TokenSession, now: Date): void {
+    const endsAt = this.endsAt(ts);
+    if (endsAt && now.getTime() > endsAt.getTime() + ANSWER_GRACE_AFTER_TIME_UP_MS) {
+      throw new ConflictException({ statusCode: 409, message: 'section time is up', reason: 'time_up' });
+    }
+  }
+
+  /**
+   * v1.2: stores a multiple-choice answer (display index → canonical) with its auto score. Self-paced:
+   * any position; live: presented now or earlier. 409 time_up / not_live.
+   */
+  async saveChoice(ts: TokenSession, position: number, displayChoice: number | null): Promise<{ savedAt: string }> {
+    const s = ts.session;
+    const now = new Date();
+    if (s.status !== 'live') throw new ConflictException({ statusCode: 409, message: 'session is not live', reason: 'not_live' });
+    this.assertNotTimeUp(ts, now);
+    const questions = await this.questions(ts);
+    const q = questions[position - 1];
+    if (!q) throw new BadRequestException('position out of range');
+    if (!q.choices) throw new BadRequestException('question is not multiple choice');
+    if (displayChoice !== null && (displayChoice < 0 || displayChoice >= q.choices.length)) throw new BadRequestException('choice out of range');
+    const canonical = displayChoice === null ? null : toCanonicalChoice(q.choiceOrder, displayChoice);
+    // correctChoice is read here only to score; it never reaches the candidate payload.
+    const row = await this.prisma.question.findFirst({
+      where: { kitId: s.kitId, section: s.section, key: q.key },
+      select: { correctChoice: true },
+    });
+    const marking = ts.section.scoring === 'auto' && ts.section.autoScoring ? ts.section.autoScoring : null;
+    const autoScore = marking ? autoScoreFor(marking, canonical, row?.correctChoice ?? null) : null;
+    const data = { choice: canonical, autoScore, candidateAnswerAt: now };
+    if (ts.section.selfPaced) {
+      await this.prisma.response.upsert({
+        where: { sessionId_questionKey: { sessionId: s.id, questionKey: q.key } },
+        create: { sessionId: s.id, questionKey: q.key, ...data },
+        update: data,
+      });
+    } else {
+      const updated = await this.prisma.response.updateMany({
+        where: { sessionId: s.id, questionKey: q.key, firstPresentedAt: { not: null } },
+        data,
+      });
+      if (updated.count === 0) throw new ConflictException({ statusCode: 409, message: 'question has not been presented', reason: 'not_presented' });
+    }
+    return { savedAt: now.toISOString() };
+  }
+
+  private assertSelfPaced(ts: TokenSession): void {
+    if (!ts.section.selfPaced) throw new ConflictException({ statusCode: 409, message: 'section is interviewer-driven', reason: 'not_self_paced' });
+  }
+
+  /** v1.2: the candidate starts a self-paced section (ready → live). Gated on consent and devices when recording is required. */
+  async start(ts: TokenSession): Promise<void> {
+    this.assertSelfPaced(ts);
+    const s = ts.session;
+    if (s.status === 'live') return;
+    if (s.status !== 'ready') throw new ConflictException({ statusCode: 409, message: 'session is not ready', reason: 'not_live' });
+    if (s.recordingRequired) {
+      if (!s.consentAt) throw new ConflictException({ statusCode: 409, message: 'consent required', reason: 'consent_required' });
+      const segs = await this.prisma.recordingSegment.findMany({ where: { sessionId: s.id, deletedAt: null }, select: { stream: true } });
+      const streams = new Set(segs.map((x) => x.stream));
+      if (!streams.has('camera') || !streams.has('screen')) {
+        throw new ConflictException({ statusCode: 409, message: 'camera and screen recording required', reason: 'devices_required' });
+      }
+    }
+    const now = new Date();
+    await this.prisma.session.updateMany({
+      where: { id: s.id, status: 'ready' },
+      data: { status: 'live', startedAt: now, version: { increment: 1 } },
+    });
+    this.logger.log(`self-paced session ${s.id} started by candidate`);
+  }
+
+  /** v1.2: the candidate moves to a displayed position (same accounting as the interviewer's /present). */
+  async navigate(ts: TokenSession, position: number): Promise<void> {
+    this.assertSelfPaced(ts);
+    const s = ts.session;
+    if (s.status !== 'live') throw new ConflictException({ statusCode: 409, message: 'session is not live', reason: 'not_live' });
+    const questions = await this.questions(ts);
+    const q = questions[position - 1];
+    if (!q) throw new BadRequestException('position out of range');
+    const now = new Date();
+    await this.prisma.$transaction((tx) => applyPresent(tx, s, q.key, now));
+  }
+
+  /** v1.2: the candidate submits a self-paced section (→ completed). Idempotent once completed. */
+  async submit(ts: TokenSession): Promise<void> {
+    this.assertSelfPaced(ts);
+    const s = ts.session;
+    if (s.status === 'completed') return;
+    if (s.status !== 'live') throw new ConflictException({ statusCode: 409, message: 'session is not live', reason: 'not_live' });
+    const now = new Date();
+    await this.prisma.$transaction((tx) => applyEnd(tx, s, now));
+    this.logger.log(`self-paced session ${s.id} submitted by candidate`);
   }
 
   /** First consent wins; later calls are no-ops. Appends a consent_given event. */
@@ -157,10 +311,7 @@ export class CandidateViewService {
     const now = new Date();
     const endedWithinGrace = s.status === 'completed' && !!s.endedAt && now.getTime() - s.endedAt.getTime() <= ANSWER_GRACE_AFTER_END_MS;
     if (s.status !== 'live' && !endedWithinGrace) throw new ConflictException({ statusCode: 409, message: 'session is not live', reason: 'not_live' });
-    const endsAt = this.endsAt(ts);
-    if (endsAt && now.getTime() > endsAt.getTime() + ANSWER_GRACE_AFTER_TIME_UP_MS) {
-      throw new ConflictException({ statusCode: 409, message: 'section time is up', reason: 'time_up' });
-    }
+    this.assertNotTimeUp(ts, now);
     const questions = await this.questions(ts);
     const q = questions[position - 1];
     if (!q) throw new BadRequestException('position out of range');

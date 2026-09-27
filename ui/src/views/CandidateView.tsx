@@ -5,10 +5,13 @@
  *
  * v1: consent → devices (camera + mic, entire screen) → chunked upload while the interviewer
  * drives the session; the candidate types answers here. Nothing is recorded before consent.
+ * v1.2: multiple-choice questions (choice cards, saved on click) and self-paced sections, where the
+ * candidate starts, navigates and submits on their own within the section time limit.
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useParams } from 'react-router-dom';
-import type { CandidateState } from '@contracts/api';
+import { CandidateMarketPanel } from '../market/CandidateMarketPanel';
+import type { AutoScoring, CandidateState } from '@contracts/api';
 import { api, ApiError } from '../api/client';
 import { CodeBlock } from '../components/CodeBlock';
 import { DatasetTable } from '../components/DatasetTable';
@@ -109,7 +112,17 @@ export function CandidateView() {
 
   const endsAt = snap?.state.sectionEndsAt ?? null;
   const now = useTick(endsAt !== null);
-  const timeUp = snap !== null && endsAt !== null && now + snap.offset >= Date.parse(endsAt);
+  const [serverTimeUp, setServerTimeUp] = useState(false);
+  const timeUp = serverTimeUp || (snap !== null && endsAt !== null && now + snap.offset >= Date.parse(endsAt));
+  // v1.2: multiple-choice answers are saved per displayed position, optimistically, for the whole session.
+  const choices = useChoiceSaver(token, useCallback(() => setServerTimeUp(true), []));
+  const refetch = useCallback(async () => {
+    try {
+      apply(await api().getCandidateState(token));
+    } catch {
+      /* the poll will catch up */
+    }
+  }, [apply, token]);
 
   if (status === 'notfound') {
     return (
@@ -141,8 +154,25 @@ export function CandidateView() {
   } else {
     body = (
       <>
-        {state.phase === 'waiting' && <Centered title="Please wait" body="Your interviewer will start shortly." />}
-        {state.phase === 'intro' && (
+        {state.phase === 'waiting' && !state.selfPaced && <Centered title="Please wait" body="Your interviewer will start shortly." />}
+        {(state.phase === 'waiting' || state.phase === 'intro') && state.selfPaced && (
+          <SelfPacedIntro
+            instructions={state.instructions}
+            marking={state.marking}
+            onStart={async () => {
+              try {
+                apply(await api().startTest(token));
+              } catch (e) {
+                if (e instanceof ApiError && e.status === 409 && (e.reason === 'consent_required' || e.reason === 'devices_required')) {
+                  await refetch();
+                  throw new Error(e.reason === 'consent_required' ? 'Please accept the recording notice first.' : 'Your camera and screen recording has not started yet — please wait a moment and try again.');
+                }
+                throw e;
+              }
+            }}
+          />
+        )}
+        {state.phase === 'intro' && !state.selfPaced && (
           <div className="mx-auto max-w-3xl">
             <h2 className="mb-4 text-2xl font-semibold">Before we begin</h2>
             {state.instructions ? (
@@ -152,7 +182,21 @@ export function CandidateView() {
             )}
           </div>
         )}
-        {state.phase === 'question' && state.question && (
+        {state.market && (state.phase === 'intro' || state.phase === 'question') && (
+          <div className="mx-auto mt-6 max-w-3xl">
+            <CandidateMarketPanel state={state} token={token} onState={(s) => apply(s)} />
+          </div>
+        )}
+        {state.phase === 'question' && state.question && state.selfPaced && (
+          <SelfPacedScreen
+            token={token}
+            state={state}
+            choices={choices}
+            locked={timeUp}
+            apply={apply}
+          />
+        )}
+        {state.phase === 'question' && state.question && !state.selfPaced && (
           <div className="mx-auto max-w-4xl space-y-6" data-testid="question">
             <div className="flex items-baseline justify-between gap-4">
               <h2 className="text-xl font-semibold text-slate-600">
@@ -163,14 +207,24 @@ export function CandidateView() {
             <Markdown text={state.question.prompt} className="text-xl leading-relaxed" />
             {state.question.dataset && <DatasetTable dataset={state.question.dataset} large />}
             {state.question.code && <CodeBlock code={state.question.code} large />}
-            <AnswerBox
-              key={`${token}-${state.question.position}`}
-              token={token}
-              position={state.question.position}
-              initial={state.answer?.text ?? ''}
-              initialSavedAt={state.answer?.savedAt ?? null}
-              locked={timeUp}
-            />
+            {state.question.choices ? (
+              <ChoiceList
+                options={state.question.choices}
+                value={choices.valueFor(state.question.position, state.answer?.choice ?? null)}
+                onChange={(c) => choices.set(state.question!.position, c)}
+                locked={timeUp}
+                status={choices.status}
+              />
+            ) : (
+              <AnswerBox
+                key={`${token}-${state.question.position}`}
+                token={token}
+                position={state.question.position}
+                initial={state.answer?.text ?? ''}
+                initialSavedAt={state.answer?.savedAt ?? null}
+                locked={timeUp}
+              />
+            )}
           </div>
         )}
       </>
@@ -461,6 +515,313 @@ function AnswerBox({
         <p className="mt-1 text-sm font-medium text-red-700" data-testid="time-up">
           Time's up — your answers are saved.
         </p>
+      )}
+    </div>
+  );
+}
+
+// ---- v1.2: multiple choice + self-paced ---------------------------------------------------------
+
+const fmtPts = (n: number) => (n > 0 ? `+${fmtNum(n)}` : n < 0 ? `−${fmtNum(-n)}` : '0');
+const fmtNum = (n: number) => (n === 0.25 ? '¼' : n === 0.5 ? '½' : n === 0.75 ? '¾' : Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, ''));
+
+export function markingLine(m: AutoScoring): string {
+  return `Correct ${fmtPts(m.correct)} · Wrong ${fmtPts(m.wrong)} · Blank ${fmtPts(m.blank)}`;
+}
+
+/** Saves choices immediately (optimistic), one request at a time, with backoff / Retry-After. */
+function useChoiceSaver(token: string, onTimeUp: () => void) {
+  const [local, setLocal] = useState<Record<number, number | null>>({});
+  const [status, setStatus] = useState<SaveStatus>('idle');
+  const queue = useRef<Map<number, number | null>>(new Map());
+  const inflight = useRef(false);
+  const retries = useRef(0);
+  const timer = useRef<number | undefined>(undefined);
+
+  const flush = useCallback(async () => {
+    window.clearTimeout(timer.current);
+    if (inflight.current || queue.current.size === 0) return;
+    const [position, choice] = queue.current.entries().next().value as [number, number | null];
+    queue.current.delete(position);
+    inflight.current = true;
+    setStatus('saving');
+    try {
+      await api().saveChoice(token, { position, choice });
+      retries.current = 0;
+      setStatus('saved');
+    } catch (e) {
+      const api409 = e instanceof ApiError && e.status === 409;
+      if (api409 && e.reason === 'time_up') {
+        queue.current.clear();
+        setStatus('timeup');
+        onTimeUp();
+      } else if (api409) {
+        // not_live / not_presented will not succeed by themselves: keep the local value, report it.
+        setStatus('error');
+      } else {
+        if (!queue.current.has(position)) queue.current.set(position, choice);
+        setStatus('error');
+        retries.current += 1;
+        const wait = e instanceof ApiError && e.status === 429 ? Math.max(500, e.retryAfterMs ?? 1000) : Math.min(10_000, 1000 * 2 ** Math.min(retries.current, 4));
+        timer.current = window.setTimeout(() => void flush(), wait);
+      }
+    } finally {
+      inflight.current = false;
+      if (queue.current.size > 0 && retries.current === 0) void flush();
+    }
+  }, [token, onTimeUp]);
+
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  const set = useCallback(
+    (position: number, choice: number | null) => {
+      setLocal((l) => ({ ...l, [position]: choice }));
+      queue.current.set(position, choice);
+      void flush();
+    },
+    [flush],
+  );
+  const valueFor = useCallback((position: number, server: number | null) => (position in local ? local[position] : server), [local]);
+  const answered = useCallback(
+    (serverPositions: number[]) => {
+      const set = new Set(serverPositions);
+      for (const [p, c] of Object.entries(local)) {
+        if (c === null) set.delete(Number(p));
+        else set.add(Number(p));
+      }
+      return set;
+    },
+    [local],
+  );
+  return { local, status, set, valueFor, answered };
+}
+type ChoiceSaver = ReturnType<typeof useChoiceSaver>;
+
+function ChoiceList({
+  options,
+  value,
+  onChange,
+  locked,
+  status,
+}: {
+  options: string[];
+  value: number | null;
+  onChange: (c: number | null) => void;
+  locked: boolean;
+  status: SaveStatus;
+}) {
+  const saveLabel = locked ? "Time's up — your answers are saved." : status === 'saving' ? 'Saving…' : status === 'saved' ? 'Saved ✓' : status === 'error' ? 'Not saved — retrying' : '';
+  return (
+    <div className="border-t border-slate-200 pt-5" data-testid="choices">
+      <div className="flex items-baseline justify-between gap-4">
+        <span className="text-lg font-semibold">Your answer</span>
+        <span className={`text-sm ${status === 'error' && !locked ? 'text-red-700' : 'text-slate-500'}`} data-testid="answer-status">
+          {saveLabel}
+        </span>
+      </div>
+      <div role="radiogroup" className="mt-3 grid gap-3">
+        {options.map((opt, i) => {
+          const on = value === i;
+          return (
+            <button
+              key={i}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              disabled={locked}
+              onClick={() => !locked && onChange(on ? i : i)}
+              className={`flex w-full items-start gap-4 rounded-lg border-2 px-4 py-3 text-left text-lg transition ${
+                on ? 'border-slate-900 bg-slate-100 ring-2 ring-slate-900' : 'border-slate-300 bg-white hover:border-slate-500'
+              } ${locked ? 'cursor-default opacity-80' : ''}`}
+              data-testid={`choice-${i}`}
+            >
+              <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 text-sm font-semibold ${on ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-400 text-slate-600'}`}>
+                {String.fromCharCode(65 + i)}
+              </span>
+              <Markdown text={opt} className="min-w-0 flex-1 text-lg" />
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-3 flex items-center gap-3">
+        <button type="button" className="btn text-sm" disabled={locked || value === null} onClick={() => onChange(null)} data-testid="clear-answer">
+          Clear answer
+        </button>
+        {locked && (
+          <p className="text-sm font-medium text-red-700" data-testid="time-up">
+            Time's up — your answers are saved.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SelfPacedIntro({ instructions, marking, onStart }: { instructions: string | null; marking: AutoScoring | null; onStart: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="mx-auto max-w-3xl" data-testid="self-paced-intro">
+      <h2 className="mb-4 text-2xl font-semibold">Before you start</h2>
+      {instructions && <Markdown text={instructions} className="text-lg" />}
+      <div className="mt-5 grid gap-3 sm:grid-cols-2">
+        {marking && (
+          <div className="card p-4">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Marking</h3>
+            <p className="mt-1 text-lg" data-testid="marking">
+              {markingLine(marking)}
+            </p>
+          </div>
+        )}
+        <div className="card p-4">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Time limit</h3>
+          <p className="mt-1 text-lg">The clock starts when you press Start; the countdown stays at the top of the page. Your answers are saved as you go and submitted when time runs out.</p>
+        </div>
+      </div>
+      <button
+        className="btn btn-primary mt-6 px-5 py-2.5 text-lg"
+        disabled={busy}
+        data-testid="start-test"
+        onClick={async () => {
+          setBusy(true);
+          setError(null);
+          try {
+            await onStart();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : 'Could not start — please try again.');
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        Start test
+      </button>
+      {error && (
+        <p className="mt-2 text-sm text-red-700" data-testid="start-error">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SelfPacedScreen({
+  token,
+  state,
+  choices,
+  locked,
+  apply,
+}: {
+  token: string;
+  state: CandidateState;
+  choices: ChoiceSaver;
+  locked: boolean;
+  apply: (s: CandidateState) => void;
+}) {
+  const q = state.question!;
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const answered = choices.answered(state.answeredPositions);
+  const unanswered = q.total - answered.size;
+  const go = async (position: number) => {
+    if (busy || position < 1 || position > q.total || position === q.position) return;
+    setBusy(true);
+    setError(null);
+    try {
+      apply(await api().navigate(token, { position }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not move — please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      apply(await api().submitTest(token));
+      setConfirm(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not submit — please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[minmax(0,1fr)_14rem]" data-testid="question">
+      <div className="space-y-6">
+        <h2 className="text-xl font-semibold text-slate-600" data-testid="question-heading">
+          Question {q.position} of {q.total}
+        </h2>
+        <Markdown text={q.prompt} className="text-xl leading-relaxed" />
+        {q.dataset && <DatasetTable dataset={q.dataset} large />}
+        {q.code && <CodeBlock code={q.code} large />}
+        {q.choices ? (
+          <ChoiceList options={q.choices} value={choices.valueFor(q.position, state.answer?.choice ?? null)} onChange={(c) => choices.set(q.position, c)} locked={locked} status={choices.status} />
+        ) : (
+          <AnswerBox key={`${token}-${q.position}`} token={token} position={q.position} initial={state.answer?.text ?? ''} initialSavedAt={state.answer?.savedAt ?? null} locked={locked} />
+        )}
+        <div className="flex flex-wrap items-center gap-3 border-t border-slate-200 pt-4">
+          <button type="button" className="btn px-4 py-2 text-base" disabled={busy || q.position <= 1} onClick={() => go(q.position - 1)} data-testid="prev">
+            ← Previous
+          </button>
+          <button type="button" className="btn px-4 py-2 text-base" disabled={busy || q.position >= q.total} onClick={() => go(q.position + 1)} data-testid="next">
+            Next →
+          </button>
+          <button type="button" className="btn btn-primary ml-auto px-4 py-2 text-base" disabled={busy} onClick={() => setConfirm(true)} data-testid="submit-test">
+            Submit test
+          </button>
+        </div>
+        {error && <p className="text-sm text-red-700">{error}</p>}
+      </div>
+      <aside className="card self-start p-3" aria-label="Questions">
+        <h3 className="mb-2 text-sm font-semibold text-slate-600">
+          {answered.size} of {q.total} answered
+        </h3>
+        <ol className="grid grid-cols-5 gap-1.5" data-testid="navigator">
+          {Array.from({ length: q.total }, (_, i) => i + 1).map((p) => {
+            const isCur = p === q.position;
+            const isAns = answered.has(p);
+            return (
+              <li key={p}>
+                <button
+                  type="button"
+                  onClick={() => go(p)}
+                  disabled={busy}
+                  aria-current={isCur ? 'true' : undefined}
+                  className={`flex h-9 w-full items-center justify-center rounded-md border text-sm font-semibold ${
+                    isCur ? 'border-slate-900 ring-2 ring-slate-900' : 'border-slate-300'
+                  } ${isAns ? 'bg-emerald-100 text-emerald-900' : 'bg-white text-slate-600'}`}
+                  data-testid={`nav-${p}`}
+                  data-answered={isAns ? '1' : '0'}
+                >
+                  {p}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+        <p className="mt-2 text-xs text-slate-500">Green = answered. Answers save as you click.</p>
+      </aside>
+      {confirm && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/70 p-6" data-testid="submit-dialog">
+          <div className="card max-w-md p-6">
+            <h2 className="text-2xl font-semibold">Submit your test?</h2>
+            <p className="mt-2 text-base text-slate-700" data-testid="submit-summary">
+              {unanswered === 0 ? 'You have answered every question.' : `${unanswered} of ${q.total} question${q.total === 1 ? '' : 's'} ${unanswered === 1 ? 'is' : 'are'} unanswered.`} Once submitted you cannot change your answers.
+            </p>
+            {error && <p className="mt-2 text-sm text-red-700">{error}</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className="btn px-4 py-2 text-base" disabled={busy} onClick={() => setConfirm(false)} data-testid="submit-cancel">
+                Keep working
+              </button>
+              <button type="button" className="btn btn-primary px-4 py-2 text-base" disabled={busy} onClick={() => void submit()} data-testid="submit-confirm">
+                Submit
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -171,6 +171,19 @@ installed there.
 - Integrity events store counts, never content.
 - A candidate who needs an adjustment can be run without recording (`recordingRequired: false`).
 
+## 16 · Aptitude test, make-a-market, transcripts — answered by Hitesh (follow-up)
+
+| # | Question | Decision | Other options | What it means |
+|---|---|---|---|---|
+| 59 | How do candidates take the multiple-choice test? | **Self-paced, timed** ★ | Live, interviewer presents | The candidate starts, navigates and submits within the limit. It is auto-scored and recorded, and works as an early screen ("stage 0") that scales to the 500/day funnel. |
+| 60 | How long? | **20 questions, 30 minutes** ★ | 30 q / 45 min · 12 q / 15 min | High-school maths (7), probability (7) and statistics (6). Question and option order are shuffled per candidate. |
+| 61 | How is it scored? | **Negative marking: +1 / −¼ / 0** | +1/0 with a pass mark ★ · confidence-weighted | Discourages blind guessing. The default pass mark is 12/20, editable in Settings. |
+| 62 | Extras alongside it? | **Local transcripts → draft notes** | Device check link ★ · mental-math round · leak fingerprinting | whisper.cpp and a local model on the Studio. Drafts are never scores. Built after the MCQ and market ship. |
+| 63 | Make-a-market game? | **Build it and ship it now** (Hitesh) | — | A live section ("X"). The candidate keeps a bid/ask on the table and the interviewer lifts, hits, reveals (dice or hints) and settles. P&L, spread and skew metrics are shown to the interviewer. |
+
+**Content policy:** the aptitude bank and market templates are real test content, so like the kit they live
+only in `private/` and the database, and every numeric answer is verified in code.
+
 ## Operational decisions made on the day
 
 - **URL:** `https://hiring.basistrading.net` (Hitesh). The console sits behind Cloudflare Access

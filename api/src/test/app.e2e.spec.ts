@@ -101,13 +101,14 @@ describe('talent-os API (e2e)', () => {
     expect(res.headers['cache-control']).toBe('no-store');
     state = res.body as CandidateState;
     expect(Object.keys(state).sort()).toEqual([
-      'answer', 'instructions', 'orgName', 'phase', 'presentedAt', 'question', 'recording', 'sectionEndsAt', 'sectionLabel', 'serverNow', 'version',
+      'answer', 'answeredPositions', 'instructions', 'market', 'marking', 'orgName', 'phase', 'presentedAt', 'question', 'recording',
+      'sectionEndsAt', 'sectionLabel', 'selfPaced', 'serverNow', 'version',
     ]);
     expect(state.phase).toBe('question');
     expect(state.question).toMatchObject({ position: 1, total: 4, timeMinutes: 4 });
     expect(state.question!.prompt).toContain('five daily returns');
     expect(state.question!.dataset!.text).toContain('day,return_pct');
-    expect(Object.keys(state.question!).sort()).toEqual(['code', 'dataset', 'position', 'prompt', 'timeMinutes', 'total']);
+    expect(Object.keys(state.question!).sort()).toEqual(['choices', 'code', 'dataset', 'position', 'prompt', 'timeMinutes', 'total']);
     const json = JSON.stringify(state);
     for (const fragment of SECRET_FRAGMENTS) expect(json).not.toContain(fragment);
     expect(json).not.toContain('A1');

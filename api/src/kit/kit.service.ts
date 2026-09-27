@@ -49,6 +49,9 @@ export function toQuestion(q: QuestionRow): Question {
     rubric: (q.rubric as Question['rubric']) ?? null,
     trapOrBonus: q.trapOrBonus ?? null,
     whatGoodLooksLike: q.whatGoodLooksLike ?? null,
+    choices: (q.choices as string[] | null) ?? null,
+    correctChoice: q.correctChoice ?? null,
+    market: (q.market as Question['market']) ?? null,
   };
 }
 
@@ -68,6 +71,12 @@ export function toSectionDef(s: SectionSeed, questions: QuestionRow[]): SectionD
     candidateView: !!s.candidateView,
     showInstructions: !!s.showInstructions,
     interviewerNotes: s.interviewerNotes ?? null,
+    selfPaced: !!s.selfPaced,
+    shuffle: !!s.shuffle,
+    autoScoring: s.autoScoring
+      ? { correct: s.autoScoring.correct, wrong: s.autoScoring.wrong, blank: s.autoScoring.blank }
+      : null,
+    candidateInstructions: s.candidateInstructions ?? null,
     questionKeys: questions
       .filter((q) => q.section === s.key)
       .sort((a, b) => a.number - b.number)

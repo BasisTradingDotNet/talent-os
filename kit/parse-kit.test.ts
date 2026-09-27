@@ -15,26 +15,41 @@ import {
   countBySection,
   parseCsv,
   parseDimensions,
+  parseArgs,
+  parseChoices,
   parseIndex,
   parseKit,
+  parseMarketConfig,
   splitRubric,
   type KitProfile,
 } from './parse-kit.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = readFileSync(join(here, 'fixtures', 'sample-kit.md'), 'utf8');
+const mcqFixture = readFileSync(join(here, 'fixtures', 'sample-mcq.md'), 'utf8');
+const marketFixture = readFileSync(join(here, 'fixtures', 'sample-market.md'), 'utf8');
 
-/** Same layout as the real kit, synthetic labels and counts. */
+/** Same layout as the real kit, synthetic labels and counts. Base kit only (no add-on sections). */
 const SAMPLE_PROFILE: KitProfile = {
   ...QUANT_TRADER_PROFILE,
   slug: 'sample',
   version: '0.1',
+  baseVersion: '0.1',
   title: 'Sample Interview Kit (synthetic)',
+  sections: QUANT_TRADER_PROFILE.sections.filter((s) => !s.addon),
   takeHome: {
     ...QUANT_TRADER_PROFILE.takeHome,
     titles: ['Totals', 'Duplicate', 'Chart', 'Assumptions', 'Finding', 'Code'],
   },
   expectedCounts: { S1: 2, A: 3, B: 1, C: 1, T: 6, S4: 1 },
+};
+
+/** Base kit plus the two add-on sections (M, X) fed from the add-on fixtures. */
+const ADDON_PROFILE: KitProfile = {
+  ...SAMPLE_PROFILE,
+  version: '0.2',
+  sections: QUANT_TRADER_PROFILE.sections,
+  expectedCounts: { M: 3, S1: 2, A: 3, B: 1, C: 1, X: 2, T: 6, S4: 1 },
 };
 
 const seed = parseKit(fixture, SAMPLE_PROFILE);
@@ -108,10 +123,18 @@ test('sections carry the profile config, computed maxScore and notes from the ma
   assert.equal(s4.interviewerNotes, 'Mode: verbal. Rated on dimensions 4, 5, 6, 7 plus leadership judgement.');
   assert.deepEqual(s4.dimensionIds, [4, 5, 6, 7, 8]);
   assert.equal(s4.candidateView, false);
+  // v1.2 defaults for base-kit sections.
+  for (const s of seed.sections) {
+    assert.equal(s.selfPaced, false, s.key);
+    assert.equal(s.shuffle, false, s.key);
+    assert.equal(s.autoScoring, null, s.key);
+    assert.equal(s.candidateInstructions, null, s.key);
+  }
   // Property set is exactly SectionSeed's.
   assert.deepEqual(Object.keys(a).sort(), [
-    'bands', 'candidateLabel', 'candidateView', 'dimensionIds', 'domainGroups', 'interviewerNotes', 'key',
-    'label', 'maxScore', 'recommendationOptions', 'scoring', 'showInstructions', 'stage', 'timeMinutes',
+    'autoScoring', 'bands', 'candidateInstructions', 'candidateLabel', 'candidateView', 'dimensionIds',
+    'domainGroups', 'interviewerNotes', 'key', 'label', 'maxScore', 'recommendationOptions', 'scoring',
+    'selfPaced', 'showInstructions', 'shuffle', 'stage', 'timeMinutes',
   ]);
 });
 
@@ -133,6 +156,9 @@ test('stage 1 record: prompt and what-good-looks-like, everything else null', ()
     rubric: null,
     trapOrBonus: null,
     whatGoodLooksLike: 'Names the users and what broke.',
+    choices: null,
+    correctChoice: null,
+    market: null,
   });
   assert.equal(q('S1.2').number, 2);
   assert.equal(q('S1.2').whatGoodLooksLike, 'A reason beyond "it sounds fun".');
@@ -203,6 +229,9 @@ test('take-home criteria become T1–T6 with the generic score table as rubric',
     assert.equal(x.code, null);
     assert.equal(x.trapOrBonus, null);
     assert.equal(x.whatGoodLooksLike, null);
+    assert.equal(x.choices, null);
+    assert.equal(x.correctChoice, null);
+    assert.equal(x.market, null);
     assert.deepEqual(x.rubric, {
       '3': 'Fully right, explained clearly',
       '2': 'Right idea, small slip',
@@ -226,10 +255,162 @@ test('stage 4 record', () => {
 
 test('every question has exactly the QuestionSeed fields', () => {
   const expected = [
-    'code', 'dataset', 'difficulty', 'domain', 'key', 'mode', 'modelAnswer', 'number', 'prompt', 'rubric',
-    'section', 'stage', 'timeMinutes', 'title', 'trapOrBonus', 'whatGoodLooksLike',
+    'choices', 'code', 'correctChoice', 'dataset', 'difficulty', 'domain', 'key', 'market', 'mode', 'modelAnswer',
+    'number', 'prompt', 'rubric', 'section', 'stage', 'timeMinutes', 'title', 'trapOrBonus', 'whatGoodLooksLike',
   ];
   for (const x of seed.questions) assert.deepEqual(Object.keys(x).sort(), expected, x.key);
+  for (const x of addonSeed.questions) assert.deepEqual(Object.keys(x).sort(), expected, x.key);
+});
+
+// --- add-ons: mcq and market records ------------------------------------------------------------
+
+const addonSeed = parseKit(fixture, ADDON_PROFILE, [mcqFixture, marketFixture]);
+const aq = (key: string) => {
+  const found = addonSeed.questions.find((x) => x.key === key);
+  assert.ok(found, `question ${key} missing`);
+  return found;
+};
+
+test('add-ons: counts, order, version and section config for M and X', () => {
+  assertCounts(addonSeed, ADDON_PROFILE.expectedCounts);
+  assert.equal(addonSeed.version, '0.2');
+  assert.deepEqual(addonSeed.sections.map((s) => s.key), ['M', 'S1', 'A', 'B', 'C', 'X', 'T', 'S4']);
+  assert.deepEqual(addonSeed.questions.slice(0, 3).map((x) => x.key), ['M1', 'M2', 'M3']);
+  const m = addonSeed.sections[0];
+  assert.equal(m.stage, 0);
+  assert.equal(m.scoring, 'auto');
+  assert.equal(m.label, 'Stage 0 — Aptitude test (MCQ)');
+  assert.equal(m.candidateLabel, 'Aptitude test');
+  assert.equal(m.maxScore, 3); // 3 questions × 1 point
+  assert.equal(m.timeMinutes, 30);
+  assert.deepEqual(m.bands, [{ min: 12, label: 'Pass' }]);
+  assert.equal(m.selfPaced, true);
+  assert.equal(m.shuffle, true);
+  assert.deepEqual(m.autoScoring, { correct: 1, wrong: -0.25, blank: 0 });
+  assert.ok(m.candidateInstructions?.includes('20 questions, 30 minutes'));
+  assert.ok(m.candidateInstructions?.includes('No calculators, spreadsheets, search or AI assistants.'));
+  assert.ok(!/G-20/.test(m.candidateInstructions ?? ''));
+  assert.deepEqual(m.domainGroups.map((g) => g.domain), ['math', 'probability', 'statistics']);
+  assert.equal(m.interviewerNotes, null);
+  const x = addonSeed.sections[5];
+  assert.equal(x.stage, 2);
+  assert.equal(x.scoring, 'market');
+  assert.equal(x.label, 'Stage 2 — Make a market (live)');
+  assert.equal(x.candidateLabel, 'Market-making exercise');
+  assert.equal(x.maxScore, null);
+  assert.deepEqual(x.bands, []);
+  assert.equal(x.timeMinutes, 20);
+  assert.equal(x.selfPaced, false);
+  assert.equal(x.shuffle, false);
+  assert.equal(x.autoScoring, null);
+  assert.ok(x.candidateInstructions?.includes('quote a **bid**'));
+  assert.ok(x.candidateInstructions?.includes('Keep your quotes honest and tight'));
+  // Base sections are unchanged by the add-ons.
+  assert.deepEqual(addonSeed.sections.filter((s) => s.key !== 'M' && s.key !== 'X'), seed.sections);
+});
+
+test('add-ons: mcq records carry choices and a 0-based correctChoice, nothing else', () => {
+  assert.deepEqual(aq('M1'), {
+    key: 'M1',
+    section: 'M',
+    stage: 0,
+    number: 1,
+    title: 'Doubling',
+    domain: 'math',
+    difficulty: 'easy',
+    mode: 'mcq',
+    timeMinutes: 0,
+    prompt: 'What is 2 × 21?',
+    dataset: null,
+    code: null,
+    modelAnswer: '2 × 21 = **42**. A adds, C doubles 22, D concatenates.',
+    rubric: null,
+    trapOrBonus: null,
+    whatGoodLooksLike: null,
+    choices: ['23', '42', '44', '221'],
+    correctChoice: 1,
+    market: null,
+  });
+  assert.deepEqual(aq('M2').choices, ['1/2', '1/3', '1/4', '1/8', '0']);
+  assert.equal(aq('M2').correctChoice, 2);
+  assert.equal(aq('M3').domain, 'statistics');
+  assert.equal(aq('M3').difficulty, 'hard');
+});
+
+test('add-ons: market records carry a validated MarketConfig', () => {
+  const x1 = aq('X1');
+  assert.equal(x1.mode, 'market');
+  assert.equal(x1.section, 'X');
+  assert.equal(x1.stage, 2);
+  assert.deepEqual(x1.market, { kind: 'dice', dice: 1, sides: 6 });
+  assert.equal(x1.choices, null);
+  assert.equal(x1.correctChoice, null);
+  assert.equal(x1.rubric, null);
+  assert.equal(x1.modelAnswer, 'Fair 3.5; quote 3 / 4.');
+  assert.deepEqual(aq('X2').market, { kind: 'estimate', trueValue: 12, unit: 'cups', hints: ['More than 10.', 'Fewer than 15.'] });
+  assert.equal(aq('X2').timeMinutes, 3);
+});
+
+test('add-ons: an add-on section with no records fails, naming the fix', () => {
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [mcqFixture]), /Section X has no questions \(pass its records with --addon\)/);
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE), /Section M has no questions/);
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [mcqFixture, marketFixture, '# empty\n']), /Add-on file 3 contains no question records/);
+});
+
+test('add-ons: mcq validation — one answer letter, in range, no Scoring, unique choices', () => {
+  const twoLetters = mcqFixture.replace('**Answer:** B', '**Answer:** B, C');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [twoLetters, marketFixture]), /M1: Answer must be a single option letter/);
+  const outOfRange = mcqFixture.replace('**Answer:** B', '**Answer:** E');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [outOfRange, marketFixture]), /M1: Answer "E" is outside the 4 choices/);
+  const withScoring = mcqFixture.replace('**Answer:** B\n', '**Answer:** B\n\n**Scoring:** 3 = a. 2 = b. 1 = c. 0 = d.\n');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [withScoring, marketFixture]), /M1: mcq records are marked automatically/);
+  const dup = mcqFixture.replace('C. 44', 'C. 42');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [dup, marketFixture]), /M1: Duplicate choice "42"/);
+  const skipLetter = mcqFixture.replace('C. 44', 'D. 44');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [skipLetter, marketFixture]), /M1: Choices are not lettered contiguously/);
+  const noExplanation = mcqFixture.replace('**Model answer:** 2 × 21 = **42**. A adds, C doubles 22, D concatenates.\n', '');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [noExplanation, marketFixture]), /M1: missing model answer/);
+  assert.deepEqual(parseChoices('A. one\nB. two'), ['one', 'two']);
+  assert.throws(() => parseChoices('A. only'), /at least two choices/);
+});
+
+test('add-ons: domain groups and section/mode consistency are enforced', () => {
+  const wrongDomain = mcqFixture.replace('domain: math', 'domain: quant');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [wrongDomain, marketFixture]), /M1: domain "quant" is not one of section M's domain groups \(math, probability, statistics\)/);
+  const wrongSet = mcqFixture.replace('- id: M1 | stage: 0 | set: M', '- id: M1 | stage: 2 | set: A');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [wrongSet, marketFixture]), /M1: section A is not an add-on section/);
+  const mcqInMarket = marketFixture.replace('mode: market | time: 2 min', 'mode: mcq | time: 2 min');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [mcqFixture, mcqInMarket]), /X1: mcq record has no Choices block/);
+  const inBaseKit = fixture.replace('### S4.1 · A mistake you owned', '### M9 · Sneaky\n- id: M9 | stage: 0 | set: M | number: 9 | domain: math | difficulty: easy | mode: mcq | time: 0 min\n\n**Prompt:** p\n\n**Choices:**\nA. 1\nB. 2\n\n**Answer:** A\n\n**Model answer:** m\n\n### S4.1 · A mistake you owned');
+  assert.throws(() => parseKit(inBaseKit, ADDON_PROFILE, [mcqFixture, marketFixture]), /M9: section M is an add-on section; move the record to an --addon file/);
+});
+
+test('add-ons: market config validation', () => {
+  const noSides = marketFixture.replace('{ "kind": "dice", "dice": 1, "sides": 6 }', '{ "kind": "dice", "dice": 1 }');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [mcqFixture, noSides]), /X1: Dice market must have exactly kind, dice, sides; got dice,kind/);
+  const badJson = marketFixture.replace('{ "kind": "dice", "dice": 1, "sides": 6 }', '{ kind: dice }');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [mcqFixture, badJson]), /X1: Market config is not valid JSON/);
+  const noMarket = marketFixture.replace(/\*\*Market:\*\*\n```json\n\{ "kind": "dice", "dice": 1, "sides": 6 \}\n```\n\n/, '');
+  assert.throws(() => parseKit(fixture, ADDON_PROFILE, [mcqFixture, noMarket]), /X1: market record has no Market block/);
+  assert.throws(() => parseMarketConfig('{"kind":"estimate","trueValue":1,"unit":"x","hints":[]}'), /hints/);
+  assert.throws(() => parseMarketConfig('{"kind":"estimate","trueValue":"1","unit":"x","hints":["h"]}'), /trueValue/);
+  assert.throws(() => parseMarketConfig('{"kind":"dice","dice":0,"sides":6}'), /"dice" must be an integer >= 1/);
+  assert.throws(() => parseMarketConfig('{"kind":"dice","dice":2,"sides":6,"extra":1}'), /exactly kind, dice, sides/);
+  assert.throws(() => parseMarketConfig('{"kind":"coin"}'), /kind must be "dice" or "estimate"/);
+  assert.throws(() => parseMarketConfig('[1]'), /must be a JSON object/);
+  assert.deepEqual(parseMarketConfig('{"kind":"dice","dice":3,"sides":6}'), { kind: 'dice', dice: 3, sides: 6 });
+});
+
+test('add-ons: output round-trips through JSON unchanged', () => {
+  assert.deepEqual(JSON.parse(JSON.stringify(addonSeed)), addonSeed);
+});
+
+test('parseArgs: positional kit and output, repeatable --addon', () => {
+  assert.deepEqual(parseArgs(['k.md', 'o.json']), { input: 'k.md', output: 'o.json', addons: [] });
+  assert.deepEqual(parseArgs(['k.md', 'o.json', '--addon', 'a.md', '--addon', 'b.md']), { input: 'k.md', output: 'o.json', addons: ['a.md', 'b.md'] });
+  assert.equal(parseArgs(['k.md']), null);
+  assert.equal(parseArgs(['k.md', 'o.json', '--addon']), null);
+  assert.equal(parseArgs(['k.md', 'o.json', '--bogus', 'x']), null);
 });
 
 test('output round-trips through JSON unchanged', () => {
@@ -345,7 +526,11 @@ test('validation: ragged CSV rows fail', () => {
   assert.throws(() => parseKit(ragged, SAMPLE_PROFILE), /B1: dataset row 2 has 2 columns, header has 3/);
 });
 
-test('validation: title mismatch and expected counts', () => {
+test('validation: title mismatch, base version and expected counts', () => {
   assert.throws(() => parseKit(fixture, QUANT_TRADER_PROFILE), /does not match profile title/);
+  assert.throws(() => parseKit(fixture, { ...SAMPLE_PROFILE, baseVersion: '9.9' }), /Kit says version 0.1 but profile says base version 9.9/);
+  assert.equal(QUANT_TRADER_PROFILE.version, '1.1');
+  assert.equal(QUANT_TRADER_PROFILE.baseVersion, '1.0');
+  assert.deepEqual(QUANT_TRADER_PROFILE.expectedCounts, { M: 20, S1: 8, A: 10, B: 10, C: 10, X: 8, T: 6, S4: 7 });
   assert.throws(() => assertCounts(seed, { ...SAMPLE_PROFILE.expectedCounts, A: 10 }), /Section A: expected 10 questions, got 3/);
 });

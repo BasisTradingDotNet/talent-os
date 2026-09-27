@@ -75,7 +75,8 @@ describe('recorded written test (e2e)', () => {
     const { cand, session } = await newSession('Consent Case');
     let state = (await http.get(`${cand}/state`).expect(200)).body as CandidateState;
     expect(Object.keys(state).sort()).toEqual([
-      'answer', 'instructions', 'orgName', 'phase', 'presentedAt', 'question', 'recording', 'sectionEndsAt', 'sectionLabel', 'serverNow', 'version',
+      'answer', 'answeredPositions', 'instructions', 'market', 'marking', 'orgName', 'phase', 'presentedAt', 'question', 'recording',
+      'sectionEndsAt', 'sectionLabel', 'selfPaced', 'serverNow', 'version',
     ]);
     expect(Object.keys(state.recording).sort()).toEqual(['consentGiven', 'consentText', 'required']);
     expect(state.recording.required).toBe(true);
@@ -192,13 +193,13 @@ describe('recorded written test (e2e)', () => {
     expect(s.responses.find((r) => r.questionKey === 'A1')!.firstPresentedAt).toBeTruthy();
     expect(s.sectionEndsAt).toBe(new Date(new Date(s.startedAt!).getTime() + 12 * 60_000).toISOString());
     let state = (await http.get(`${cand}/state`).expect(200)).body as CandidateState;
-    expect(state.answer).toEqual({ text: '', savedAt: null });
+    expect(state.answer).toEqual({ text: '', savedAt: null, choice: null });
     expect(state.sectionEndsAt).toBe(s.sectionEndsAt);
 
     const saved = (await http.put(`${cand}/answer`).send({ position: 1, text: 'mean is 0.042' }).expect(200)).body;
     expect(Object.keys(saved)).toEqual(['savedAt']);
     state = (await http.get(`${cand}/state`).expect(200)).body as CandidateState;
-    expect(state.answer).toEqual({ text: 'mean is 0.042', savedAt: saved.savedAt });
+    expect(state.answer).toEqual({ text: 'mean is 0.042', savedAt: saved.savedAt, choice: null });
     const notYet = await http.put(`${cand}/answer`).send({ position: 3, text: 'x' }).expect(409);
     expect(notYet.body.reason).toBe('not_presented');
     await http.put(`${cand}/answer`).send({ position: 9, text: 'x' }).expect(400);

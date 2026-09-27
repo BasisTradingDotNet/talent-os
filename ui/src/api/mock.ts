@@ -33,6 +33,9 @@ const CONSENT_TEXT =
 
 const FLAG_TYPES = new Set(['tab_hidden', 'window_blur', 'paste', 'screen_share_stopped', 'camera_stopped']);
 
+/** Candidates see the candidate brand, never the internal org name (mirrors the API's CANDIDATE_BRAND). */
+const CANDIDATE_BRAND = 'BTNET';
+
 interface CandidateRow {
   id: string;
   applicationId: string;
@@ -71,6 +74,12 @@ interface SessionRow {
   segments: RecordingSegment[];
   events: IntegrityEvent[];
   extensionMinutes: number;
+  /** v1.2: shuffled question keys in display order; null = canonical order. */
+  questionOrder: string[] | null;
+  /** v1.2: per question key, canonical choice index at each displayed index; null = canonical. */
+  choiceOrders: Record<string, number[]> | null;
+  /** v1.2: self-paced — the displayed position the candidate is on (1-based). */
+  currentPosition: number;
 }
 
 interface Store {
@@ -83,10 +92,74 @@ interface Store {
 
 const ME = { email: 'interviewer@example.com' };
 
+/** v1.2: a synthetic self-paced multiple-choice section (MOCK ONLY — never a real kit). */
+const MCQ_SECTION: Omit<SectionDef, 'questionKeys'> = {
+  key: 'M',
+  stage: 0,
+  label: 'Stage 0 — Multiple-choice screen',
+  candidateLabel: 'Online test',
+  scoring: 'auto',
+  timeMinutes: 10,
+  maxScore: 4,
+  bands: [{ min: 2, label: 'Pass — progress' }],
+  dimensionIds: [],
+  recommendationOptions: [],
+  domainGroups: [
+    { domain: 'math', label: 'Math' },
+    { domain: 'probability', label: 'Probability' },
+    { domain: 'statistics', label: 'Statistics' },
+  ],
+  candidateView: true,
+  showInstructions: true,
+  interviewerNotes: 'Candidate-paced: the candidate starts, navigates and submits on their own. Auto-scored: +1 correct, −¼ wrong, 0 blank.',
+  selfPaced: true,
+  shuffle: true,
+  autoScoring: { correct: 1, wrong: -0.25, blank: 0 },
+  candidateInstructions:
+    'You have **10 minutes** for 4 multiple-choice questions. Pick one option per question; you can change or clear an answer and move between questions freely. Wrong answers lose a quarter of a mark, blanks score zero — so only guess when you can rule options out. Press **Submit test** when you are done.',
+};
+const mcqQ = (n: number, domain: Question['domain'], title: string, prompt: string, choices: string[], correctChoice: number, modelAnswer: string): Omit<Question, 'id'> => ({
+  key: `M${n}`,
+  section: 'M',
+  stage: 0,
+  number: n,
+  title,
+  domain,
+  difficulty: 'easy',
+  mode: 'mcq',
+  timeMinutes: null,
+  prompt,
+  dataset: null,
+  code: null,
+  modelAnswer,
+  rubric: null,
+  trapOrBonus: null,
+  whatGoodLooksLike: null,
+  choices,
+  correctChoice,
+  market: null,
+});
+const MCQ_QUESTIONS: Omit<Question, 'id'>[] = [
+  mcqQ(1, 'math', 'Derivative of a cube', 'What is the derivative of $x^3$ evaluated at $x = 2$?', ['6', '12', '8', '4'], 1, 'd/dx x³ = 3x², which is 12 at x = 2.'),
+  mcqQ(2, 'probability', 'Sum of two dice', 'Two fair six-sided dice are rolled. What is the probability that the sum is 7?', ['1/12', '1/6', '1/9', '5/36'], 1, 'Six of the 36 equally likely outcomes sum to 7: 6/36 = 1/6.'),
+  mcqQ(3, 'statistics', 'Sample mean', 'A sample has the values 2, 4, 4, 4, 5, 5, 7, 9. What is the sample mean?', ['4', '4.5', '5', '5.5'], 2, 'The values sum to 40 over 8 observations: 40/8 = 5.'),
+  mcqQ(4, 'math', 'Base-2 logarithm', 'What is $\\log_2 64$?', ['5', '6', '7', '8'], 1, '2⁶ = 64, so log₂ 64 = 6.'),
+];
+
 function buildKit(seed: KitSeed): Kit {
-  const questions: Question[] = seed.questions.map((q, i) => ({ ...q, id: `q${i + 1}` }));
-  const sections: SectionDef[] = seed.sections.map((s) => ({
+  const questions: Question[] = [...seed.questions, ...MCQ_QUESTIONS].map((q, i) => ({
+    ...q,
+    id: `q${i + 1}`,
+    choices: q.choices ?? null,
+    correctChoice: q.correctChoice ?? null,
+    market: q.market ?? null,
+  }));
+  const sections: SectionDef[] = [...seed.sections, MCQ_SECTION].map((s) => ({
     ...s,
+    selfPaced: s.selfPaced ?? false,
+    shuffle: s.shuffle ?? false,
+    autoScoring: s.autoScoring ?? null,
+    candidateInstructions: s.candidateInstructions ?? null,
     questionKeys: questions
       .filter((q) => q.section === s.key)
       .sort((a, b) => a.number - b.number)
@@ -115,6 +188,8 @@ function load(seed: KitSeed): Store {
     if (raw) {
       const s = JSON.parse(raw) as Store;
       if (s && s.kit && s.candidates && s.sessions) {
+        // Stores written before v1.2 lack the synthetic mcq section.
+        if (!s.kit.sections.some((x) => x.scoring === 'auto')) s.kit = buildKit(seed);
         // Rows written by the v0 mock lack the v1 fields.
         for (const row of s.sessions) {
           row.recordingRequired ??= false;
@@ -122,10 +197,17 @@ function load(seed: KitSeed): Store {
           row.segments ??= [];
           row.events ??= [];
           row.extensionMinutes ??= 0;
+          row.questionOrder ??= null;
+          row.choiceOrders ??= null;
+          row.currentPosition ??= 1;
           for (const r of row.responses) {
             r.candidateAnswer ??= null;
             r.candidateAnswerAt ??= null;
             r.firstPresentedAt ??= null;
+            r.choice ??= null;
+            r.autoScore ??= null;
+            r.aiDraftNote ??= null;
+            r.aiDraftAt ??= null;
           }
         }
         for (const c of s.candidates) c.decisionAt ??= null;
@@ -146,10 +228,36 @@ function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
 }
 
-function computeVerdict(kit: Kit, section: SectionDef, responses: ResponseRecord[]): Verdict | null {
-  if (section.scoring !== 'rubric') return null;
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+function computeVerdict(kit: Kit, section: SectionDef, responses: ResponseRecord[], status: Session['status'] = 'live'): Verdict | null {
   const qs = section.questionKeys.map((k) => kit.questions.find((q) => q.key === k)).filter((q): q is Question => !!q);
   const byKey = new Map(responses.map((r) => [r.questionKey, r]));
+  if (section.scoring === 'auto') {
+    // v1.2: negative marking — the total may be fractional; complete once the candidate submitted.
+    const marking = section.autoScoring ?? { correct: 1, wrong: 0, blank: 0 };
+    const pts = (q: Question) => byKey.get(q.key)?.autoScore ?? 0;
+    const total = round2(qs.reduce((acc, q) => acc + pts(q), 0));
+    const answered = qs.filter((q) => (byKey.get(q.key)?.choice ?? null) !== null).length;
+    const subtotals = section.domainGroups.map((g) => {
+      const gq = qs.filter((q) => q.domain === g.domain);
+      return { domain: g.domain, label: g.label, total: round2(gq.reduce((acc, q) => acc + pts(q), 0)), max: gq.length * marking.correct };
+    });
+    const bands = [...section.bands].sort((a, b) => a.min - b.min);
+    let band: Band | null = null;
+    for (const b of bands) if (total >= b.min) band = b;
+    return {
+      total,
+      max: section.maxScore ?? qs.length * marking.correct,
+      scored: answered,
+      skipped: status === 'completed' ? qs.length - answered : 0,
+      complete: status === 'completed',
+      subtotals,
+      band,
+      result: band ? band.label : 'Below threshold',
+    };
+  }
+  if (section.scoring !== 'rubric') return null;
   let total = 0;
   let scored = 0;
   let skipped = 0;
@@ -198,7 +306,59 @@ export async function createMockClient(): Promise<ApiClient> {
 
   const fresh = () => {
     store = load(seed);
+    autoComplete();
     return store;
+  };
+
+  /** v1.2: self-paced sessions complete on their own ~60 s after the section time runs out. */
+  const autoComplete = () => {
+    let changed = false;
+    for (const row of store.sessions) {
+      if (row.status !== 'live') continue;
+      const sec = store.kit.sections.find((x) => x.key === row.section);
+      if (!sec?.selfPaced) continue;
+      const ends = sectionEndsAt(row);
+      if (ends && Date.now() > Date.parse(ends) + 60_000) {
+        finishSession(row);
+        changed = true;
+      }
+    }
+    if (changed) save(store);
+  };
+
+  const finishSession = (row: SessionRow) => {
+    accountTime(row);
+    row.status = 'completed';
+    row.endedAt = nowIso();
+    row.presentedQuestionKey = null;
+    row.presentedAt = null;
+    row.version += 1;
+  };
+
+  // v1.2: display order helpers (shuffled sections map displayed positions/options to canonical ones).
+  const orderOf = (row: SessionRow, sec: SectionDef) => row.questionOrder ?? sec.questionKeys;
+  const keyAt = (row: SessionRow, sec: SectionDef, position: number): string | undefined => orderOf(row, sec)[position - 1];
+  const displayChoices = (row: SessionRow, q: Question): string[] | null => {
+    if (!q.choices) return null;
+    const order = row.choiceOrders?.[q.key];
+    return order ? order.map((i) => q.choices![i]) : q.choices;
+  };
+  const toDisplayIdx = (row: SessionRow, q: Question, canonical: number | null): number | null => {
+    if (canonical === null) return null;
+    const order = row.choiceOrders?.[q.key];
+    return order ? order.indexOf(canonical) : canonical;
+  };
+  const toCanonicalIdx = (row: SessionRow, q: Question, display: number): number => {
+    const order = row.choiceOrders?.[q.key];
+    return order ? order[display] : display;
+  };
+  const shuffled = <T,>(arr: T[]): T[] => {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
   };
 
   const nextId = (prefix: string) => {
@@ -259,12 +419,15 @@ export async function createMockClient(): Promise<ApiClient> {
       recommendation: row.recommendation,
       responses: row.responses,
       ratings: row.ratings,
-      verdict: computeVerdict(store.kit, sec, row.responses),
+      verdict: computeVerdict(store.kit, sec, row.responses, row.status),
       serverNow: nowIso(),
       recording: { required: row.recordingRequired, consentAt: row.consentAt, segments: row.segments },
       events: row.events,
       sectionEndsAt: sectionEndsAt(row),
       extensionMinutes: row.extensionMinutes,
+      questionOrder: row.questionOrder,
+      transcript: { status: 'none', model: null, noteModel: null, updatedAt: null, error: null, lines: [] },
+      market: null,
     });
   };
 
@@ -279,7 +442,7 @@ export async function createMockClient(): Promise<ApiClient> {
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     endedAt: row.endedAt,
-    verdict: computeVerdict(store.kit, section(row.section), row.responses),
+    verdict: computeVerdict(store.kit, section(row.section), row.responses, row.status),
     ratings: clone(row.ratings),
     recommendation: row.recommendation,
     trapsNoticed: row.responses.filter((r) => r.trapNoticed).length,
@@ -339,6 +502,10 @@ export async function createMockClient(): Promise<ApiClient> {
         candidateAnswer: null,
         candidateAnswerAt: null,
         firstPresentedAt: null,
+        choice: null,
+        autoScore: null,
+        aiDraftNote: null,
+        aiDraftAt: null,
       };
       row.responses.push(r);
     }
@@ -415,7 +582,18 @@ export async function createMockClient(): Promise<ApiClient> {
         segments: [],
         events: [],
         extensionMinutes: 0,
+        questionOrder: null,
+        choiceOrders: null,
+        currentPosition: 1,
       };
+      if (sec.shuffle) {
+        row.questionOrder = shuffled(sec.questionKeys);
+        row.choiceOrders = {};
+        for (const k of sec.questionKeys) {
+          const q = store.kit.questions.find((x) => x.key === k);
+          if (q?.choices) row.choiceOrders[k] = shuffled(q.choices.map((_, i) => i));
+        }
+      }
       store.sessions.push(row);
       commit();
       return toSession(row);
@@ -429,6 +607,7 @@ export async function createMockClient(): Promise<ApiClient> {
       await delay();
       fresh();
       const row = sessionRow(id);
+      if (section(row.section).selfPaced) throw new ApiError(409, 'The candidate starts this section', { reason: 'self_paced' });
       if (row.status !== 'ready') throw new ApiError(409, 'Session is not ready');
       row.status = 'live';
       row.startedAt = nowIso();
@@ -439,6 +618,7 @@ export async function createMockClient(): Promise<ApiClient> {
       await delay();
       fresh();
       const row = sessionRow(id);
+      if (section(row.section).selfPaced) throw new ApiError(409, 'The candidate navigates this section', { reason: 'self_paced' });
       if (row.status !== 'live') throw new ApiError(409, 'Session is not live');
       if (body.questionKey !== null && !section(row.section).questionKeys.includes(body.questionKey))
         throw new ApiError(400, 'Question is not in this section');
@@ -487,12 +667,8 @@ export async function createMockClient(): Promise<ApiClient> {
       fresh();
       const row = sessionRow(id);
       if (row.status === 'completed') throw new ApiError(409, 'Session already completed');
-      accountTime(row);
-      row.status = 'completed';
-      row.endedAt = nowIso();
-      row.presentedQuestionKey = null;
-      row.presentedAt = null;
-      commit(row);
+      finishSession(row);
+      commit();
       return toSession(row);
     },
     async reopenSession(id) {
@@ -561,8 +737,13 @@ export async function createMockClient(): Promise<ApiClient> {
       fresh();
       const row = sessionByToken(token);
       const sec = section(row.section);
+      const order = orderOf(row, sec);
+      const answeredPositions = order
+        .map((k, i) => ((row.responses.find((x) => x.questionKey === k)?.choice ?? null) !== null ? i + 1 : 0))
+        .filter((p) => p > 0);
+      const instructions = sec.candidateInstructions ?? (sec.showInstructions ? store.kit.candidateInstructions : null);
       const base = {
-        orgName: store.orgName,
+        orgName: CANDIDATE_BRAND,
         sectionLabel: sec.candidateLabel,
         serverNow: nowIso(),
         version: row.version,
@@ -573,23 +754,24 @@ export async function createMockClient(): Promise<ApiClient> {
         },
         answer: null,
         sectionEndsAt: sectionEndsAt(row),
+        selfPaced: sec.selfPaced,
+        answeredPositions,
+        marking: sec.scoring === 'auto' ? sec.autoScoring : null,
+        market: null,
       };
       if (row.status === 'ready') {
+        // v1.2: self-paced sections show the intro card (with Start) before the candidate begins.
+        if (sec.selfPaced) return { ...base, phase: 'intro', instructions, question: null, presentedAt: null };
         return { ...base, phase: 'waiting', instructions: null, question: null, presentedAt: null };
       }
       if (row.status === 'completed') {
         return { ...base, phase: 'ended', instructions: null, question: null, presentedAt: null };
       }
-      if (row.presentedQuestionKey === null) {
-        return {
-          ...base,
-          phase: 'intro',
-          instructions: sec.showInstructions ? store.kit.candidateInstructions : null,
-          question: null,
-          presentedAt: null,
-        };
+      const currentKey = sec.selfPaced ? keyAt(row, sec, row.currentPosition) ?? null : row.presentedQuestionKey;
+      if (currentKey === null) {
+        return { ...base, phase: 'intro', instructions, question: null, presentedAt: null };
       }
-      const q = store.kit.questions.find((x) => x.key === row.presentedQuestionKey);
+      const q = store.kit.questions.find((x) => x.key === currentKey);
       if (!q) throw new ApiError(404, 'Not found');
       const r = row.responses.find((x) => x.questionKey === q.key);
       const state: CandidateState = {
@@ -597,15 +779,16 @@ export async function createMockClient(): Promise<ApiClient> {
         phase: 'question',
         instructions: null,
         question: {
-          position: sec.questionKeys.indexOf(q.key) + 1,
-          total: sec.questionKeys.length,
+          position: order.indexOf(q.key) + 1,
+          total: order.length,
           prompt: q.prompt,
           dataset: q.dataset,
           code: q.code,
-          timeMinutes: q.timeMinutes,
+          timeMinutes: sec.selfPaced ? null : q.timeMinutes,
+          choices: displayChoices(row, q),
         },
-        presentedAt: row.presentedAt,
-        answer: { text: r?.candidateAnswer ?? '', savedAt: r?.candidateAnswerAt ?? null },
+        presentedAt: sec.selfPaced ? null : row.presentedAt,
+        answer: { text: r?.candidateAnswer ?? '', savedAt: r?.candidateAnswerAt ?? null, choice: toDisplayIdx(row, q, r?.choice ?? null) },
       };
       return state;
     },
@@ -627,7 +810,7 @@ export async function createMockClient(): Promise<ApiClient> {
       const row = sessionByToken(token);
       if (row.status !== 'live') throw new ApiError(409, 'Session is not live');
       const sec = section(row.section);
-      const key = sec.questionKeys[body.position - 1];
+      const key = keyAt(row, sec, body.position);
       if (!key) throw new ApiError(400, 'Unknown position');
       if (typeof body.text !== 'string' || body.text.length > 20_000) throw new ApiError(400, 'text must be at most 20,000 characters');
       const r = row.responses.find((x) => x.questionKey === key);
@@ -700,6 +883,86 @@ export async function createMockClient(): Promise<ApiClient> {
         });
       }
       commit();
+    },
+    // ---- v1.2: self-paced + multiple choice ------------------------------------------------
+    async startTest(token) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      const sec = section(row.section);
+      if (!sec.selfPaced) throw new ApiError(409, 'Your interviewer starts this section', { reason: 'not_self_paced' });
+      if (row.status === 'live') return client.getCandidateState(token);
+      if (row.status !== 'ready') throw new ApiError(409, 'Session is not ready', { reason: 'not_ready' });
+      if (row.recordingRequired) {
+        if (!row.consentAt) throw new ApiError(409, 'Consent has not been given', { reason: 'consent_required' });
+        const has = (stream: string) => row.segments.some((s) => s.stream === stream);
+        if (!has('camera') || !has('screen')) throw new ApiError(409, 'Camera and screen recording must be running', { reason: 'devices_required' });
+      }
+      row.status = 'live';
+      row.startedAt = nowIso();
+      row.currentPosition = 1;
+      const key = keyAt(row, sec, 1) ?? null;
+      row.presentedQuestionKey = key;
+      row.presentedAt = key ? row.startedAt : null;
+      if (key) {
+        const r = upsertResponse(row, key, {});
+        if (!r.firstPresentedAt) r.firstPresentedAt = row.startedAt;
+      }
+      commit(row);
+      return client.getCandidateState(token);
+    },
+    async navigate(token, body) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      const sec = section(row.section);
+      if (!sec.selfPaced) throw new ApiError(409, 'Not a self-paced section', { reason: 'not_self_paced' });
+      if (row.status !== 'live') throw new ApiError(409, 'Session is not live', { reason: 'not_live' });
+      const key = keyAt(row, sec, body.position);
+      if (!Number.isInteger(body.position) || !key) throw new ApiError(400, 'Unknown position');
+      accountTime(row);
+      row.currentPosition = body.position;
+      row.presentedQuestionKey = key;
+      row.presentedAt = nowIso();
+      const r = upsertResponse(row, key, {});
+      if (!r.firstPresentedAt) r.firstPresentedAt = row.presentedAt;
+      commit(row);
+      return client.getCandidateState(token);
+    },
+    async submitTest(token) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      const sec = section(row.section);
+      if (!sec.selfPaced) throw new ApiError(409, 'Not a self-paced section', { reason: 'not_self_paced' });
+      if (row.status === 'completed') return client.getCandidateState(token);
+      if (row.status !== 'live') throw new ApiError(409, 'Session is not live', { reason: 'not_live' });
+      finishSession(row);
+      commit();
+      return client.getCandidateState(token);
+    },
+    async saveChoice(token, body) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      if (row.status !== 'live') throw new ApiError(409, 'Session is not live', { reason: 'not_live' });
+      const sec = section(row.section);
+      const key = keyAt(row, sec, body.position);
+      const q = key ? store.kit.questions.find((x) => x.key === key) : undefined;
+      if (!key || !q) throw new ApiError(400, 'Unknown position');
+      if (!q.choices) throw new ApiError(400, 'Not a multiple-choice question');
+      if (body.choice !== null && (!Number.isInteger(body.choice) || body.choice < 0 || body.choice >= q.choices.length)) throw new ApiError(400, 'Unknown choice');
+      const r = row.responses.find((x) => x.questionKey === key);
+      if (!sec.selfPaced && row.presentedQuestionKey !== key && !r?.firstPresentedAt) throw new ApiError(409, 'Question has not been presented', { reason: 'not_presented' });
+      const ends = sectionEndsAt(row);
+      if (ends && Date.now() > Date.parse(ends) + 15_000) throw new ApiError(409, "Time's up", { reason: 'time_up' });
+      const marking = sec.autoScoring ?? { correct: 1, wrong: 0, blank: 0 };
+      const canonical = body.choice === null ? null : toCanonicalIdx(row, q, body.choice);
+      const autoScore = sec.scoring !== 'auto' ? null : canonical === null ? marking.blank : canonical === q.correctChoice ? marking.correct : marking.wrong;
+      const savedAt = nowIso();
+      upsertResponse(row, key, { choice: canonical, autoScore, candidateAnswerAt: savedAt });
+      commit(row);
+      return { savedAt };
     },
   };
   return client;

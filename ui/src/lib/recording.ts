@@ -27,6 +27,7 @@ class SegmentUploader {
   private finalRequested = false;
   private finished = false;
   private waiters: (() => void)[] = [];
+  private recorderActive = true;
   error: string | null = null;
   lastAckAt: number | null = null;
 
@@ -55,12 +56,23 @@ class SegmentUploader {
     void this.pump();
   }
 
-  /** No more chunks will arrive: drain the queue, then POST stop. */
+  /** No more chunks will arrive (the recorder fired `stop`): drain the queue, then POST stop. */
   finalize(): Promise<void> {
     this.finalRequested = true;
+    this.recorderActive = false;
     void this.pump();
+    return this.whenFinished();
+  }
+
+  /** Resolves once the segment is drained and stopped server-side. */
+  whenFinished(): Promise<void> {
     if (this.finished) return Promise.resolve();
     return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  /** The recorder was told to stop; its final `dataavailable` + `stop` will call finalize(). */
+  get stopping() {
+    return this.finalRequested || !this.recorderActive;
   }
 
   private async pump() {
@@ -218,7 +230,7 @@ export class RecordingController {
 
   private async startSegment(kind: RecordingStream, entry: Active) {
     if (this.stopped) return;
-    const mimeType = this.media.mimeType() ?? 'video/webm';
+    const mimeType = this.media.mimeType(kind === 'camera') ?? 'video/webm';
     const { segmentId } = await this.client.startRecording(this.token, { stream: kind, mimeType });
     const uploader = new SegmentUploader(this.token, segmentId, kind, this.client, this.onChange);
     this.uploaders.push(uploader);
@@ -253,6 +265,10 @@ export class RecordingController {
     if (!this.stopped) this.onEvent(kind === 'screen' ? 'screen_share_stopped' : 'camera_stopped');
   }
 
+  /**
+   * Stop an entry's recorder. Its final `dataavailable` arrives asynchronously, then `stop` →
+   * uploader.finalize(); only when the recorder is already inactive do we finalize directly.
+   */
   private stopEntry(entry: Active) {
     try {
       if (entry.recorder && entry.recorder.state !== 'inactive') entry.recorder.stop();
@@ -276,7 +292,13 @@ export class RecordingController {
       }
     }
     this.emit({ camera: 'none', screen: 'none' });
-    await Promise.all(this.uploaders.map((u) => u.finalize()));
+    // Wait for each segment's onstop → finalize → drained + stopped. A recorder that never
+    // fires `stop` (edge case) is finalized after a grace period so the page can finish.
+    const grace = window.setTimeout(() => {
+      for (const u of this.uploaders) if (!u.done) void u.finalize();
+    }, 5000);
+    await Promise.all(this.uploaders.map((u) => u.whenFinished()));
+    window.clearTimeout(grace);
     this.emit({ stopping: false });
   }
 

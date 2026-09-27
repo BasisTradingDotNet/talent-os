@@ -20,15 +20,16 @@ export interface MediaLayer {
   getCamera(): Promise<MediaStream>;
   /** Entire screen @ 5 fps, no audio. Rejects with NotMonitorError if the user picked a window or tab. */
   getScreen(): Promise<MediaStream>;
-  /** First supported MediaRecorder mimeType, or null. */
-  mimeType(): string | null;
+  /** First supported MediaRecorder mimeType for a stream with/without audio, or null. */
+  mimeType(withAudio: boolean): string | null;
 }
 
-const MIME_CANDIDATES = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
+const MIME_WITH_AUDIO = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
+const MIME_VIDEO_ONLY = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
 
-function pickMimeType(): string | null {
+function pickMimeType(withAudio: boolean): string | null {
   if (typeof MediaRecorder === 'undefined') return null;
-  for (const m of MIME_CANDIDATES) if (MediaRecorder.isTypeSupported(m)) return m;
+  for (const m of withAudio ? MIME_WITH_AUDIO : MIME_VIDEO_ONLY) if (MediaRecorder.isTypeSupported(m)) return m;
   return null;
 }
 
@@ -120,7 +121,7 @@ function createFakeMedia(): MediaLayer {
       screenStream = canvasStream(640, 360, 5, 'screen');
       return screenStream;
     },
-    mimeType: () => pickMimeType() ?? 'video/webm',
+    mimeType: (withAudio) => pickMimeType(withAudio) ?? 'video/webm',
   };
 }
 

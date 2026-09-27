@@ -1,61 +1,113 @@
-import { Controller, Get, Header, NotFoundException, Param } from '@nestjs/common';
-import type { CandidateState } from '../contracts/api';
-import type { SectionSeed } from '../contracts/kit-seed';
+import { Body, Controller, Get, Header, HttpCode, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
+import type { CandidateState, ChunkAck, SavedAnswer, StartedRecording } from '../contracts/api';
+import { asObject, bad } from '../common/validate';
 import { Public } from '../identity/identity.guard';
-import { PrismaService } from '../prisma/prisma.service';
-import { buildCandidateState } from './candidate-state';
+import { CandidateViewService, EventInput } from './candidate-view.service';
+import { ANSWER_MAX_CHARS, EVENTS_PER_CALL_MAX, isEventType } from './consent';
+import { CandidateRateLimitGuard } from './rate-limit';
 
-const TOKEN = /^[A-Za-z0-9_-]{16,128}$/;
+function clientIp(req: Request): string | null {
+  for (const name of ['cf-connecting-ip', 'x-real-ip']) {
+    const v = req.headers[name];
+    const s = Array.isArray(v) ? v[0] : v;
+    if (typeof s === 'string' && s.trim()) return s.trim().slice(0, 64);
+  }
+  return req.socket?.remoteAddress ?? null;
+}
 
 /**
- * PUBLIC, token-gated. The only unauthenticated data endpoint: returns CandidateState and
- * nothing else. Loads only the allowlisted question columns from the database.
+ * PUBLIC, token-gated, rate-limited per token. Everything here is scoped to the token's own
+ * session; the only data it ever returns is CandidateState and the small acks below. Recordings
+ * are accepted here but never served here.
  */
 @Public()
+@UseGuards(CandidateRateLimitGuard)
 @Controller('candidate')
 export class CandidateViewController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly view: CandidateViewService) {}
 
   @Get(':token/state')
   @Header('Cache-Control', 'no-store')
   async state(@Param('token') token: string): Promise<CandidateState> {
-    if (!TOKEN.test(token)) throw new NotFoundException();
-    const session = await this.prisma.session.findUnique({
-      where: { candidateToken: token },
-      select: {
-        section: true,
-        status: true,
-        presentedQuestionKey: true,
-        presentedAt: true,
-        version: true,
-        org: { select: { name: true } },
-        kit: { select: { candidateInstructions: true, sections: true } },
-      },
+    return this.view.state(await this.view.load(token));
+  }
+
+  @Post(':token/consent')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  async consent(@Param('token') token: string, @Body() body: unknown, @Req() req: Request): Promise<CandidateState> {
+    const o = asObject(body);
+    if (o.accepted !== true) bad('accepted must be true');
+    const ts = await this.view.load(token);
+    const ua = req.headers['user-agent'];
+    await this.view.consent(ts, clientIp(req), typeof ua === 'string' ? ua : null);
+    return this.view.state(await this.view.load(token));
+  }
+
+  @Put(':token/answer')
+  @Header('Cache-Control', 'no-store')
+  async answer(@Param('token') token: string, @Body() body: unknown): Promise<SavedAnswer> {
+    const o = asObject(body);
+    const position = o.position;
+    if (typeof position !== 'number' || !Number.isInteger(position) || position < 1) bad('position must be a positive integer');
+    const text = o.text;
+    if (typeof text !== 'string') bad('text must be a string');
+    if (text.length > ANSWER_MAX_CHARS) bad(`text must be at most ${ANSWER_MAX_CHARS} characters`);
+    return this.view.saveAnswer(await this.view.load(token), position, text);
+  }
+
+  @Post(':token/recordings')
+  @HttpCode(201)
+  async startRecording(@Param('token') token: string, @Body() body: unknown): Promise<StartedRecording> {
+    const o = asObject(body);
+    const stream = o.stream;
+    if (stream !== 'camera' && stream !== 'screen') bad('stream must be camera or screen');
+    const mimeType = o.mimeType;
+    if (typeof mimeType !== 'string' || mimeType.length > 200 || !/^video\/(webm|mp4)(;|$)/i.test(mimeType)) {
+      bad('mimeType must start with video/webm or video/mp4');
+    }
+    return this.view.startRecording(await this.view.load(token), stream, mimeType);
+  }
+
+  /** Raw body (see app-setup.ts): one chunk, at most 8 MB. */
+  @Put(':token/recordings/:segmentId/chunks/:seq')
+  async chunk(
+    @Param('token') token: string,
+    @Param('segmentId') segmentId: string,
+    @Param('seq') seqRaw: string,
+    @Body() body: unknown,
+  ): Promise<ChunkAck> {
+    if (!/^\d{1,9}$/.test(seqRaw)) bad('seq must be a non-negative integer');
+    if (!Buffer.isBuffer(body)) bad('body must be raw bytes');
+    if (body.length === 0) bad('chunk is empty');
+    return this.view.appendChunk(await this.view.load(token), segmentId, Number(seqRaw), body);
+  }
+
+  @Post(':token/recordings/:segmentId/stop')
+  @HttpCode(204)
+  async stopRecording(@Param('token') token: string, @Param('segmentId') segmentId: string): Promise<void> {
+    await this.view.stopRecording(await this.view.load(token), segmentId);
+  }
+
+  @Post(':token/events')
+  @HttpCode(204)
+  async events(@Param('token') token: string, @Body() body: unknown): Promise<void> {
+    const o = asObject(body);
+    if (!Array.isArray(o.events)) bad('events must be an array');
+    if (o.events.length > EVENTS_PER_CALL_MAX) bad(`at most ${EVENTS_PER_CALL_MAX} events per call`);
+    const events: EventInput[] = o.events.map((raw: unknown) => {
+      const e = asObject(raw, 'event');
+      if (!isEventType(e.type)) bad('event.type is not a known integrity event');
+      if (typeof e.clientAt !== 'string') bad('event.clientAt must be a string');
+      const clientAt = new Date(e.clientAt);
+      if (e.detail !== undefined && typeof e.detail !== 'string') bad('event.detail must be a string');
+      return {
+        type: e.type,
+        clientAt: Number.isNaN(clientAt.getTime()) ? null : clientAt,
+        detail: typeof e.detail === 'string' && e.detail ? e.detail : null,
+      };
     });
-    if (!session) throw new NotFoundException();
-    const section = ((session.kit.sections as unknown as SectionSeed[]) ?? []).find((s) => s.key === session.section);
-    if (!section || !section.candidateView) throw new NotFoundException();
-    const questions = await this.prisma.question.findMany({
-      where: { kit: { sessions: { some: { candidateToken: token } } }, section: session.section },
-      select: { key: true, prompt: true, dataset: true, code: true, timeMinutes: true },
-      orderBy: { number: 'asc' },
-    });
-    return buildCandidateState({
-      orgName: session.org.name,
-      section: { candidateLabel: section.candidateLabel, showInstructions: !!section.showInstructions },
-      candidateInstructions: session.kit.candidateInstructions,
-      status: session.status,
-      presentedQuestionKey: session.presentedQuestionKey,
-      presentedAt: session.presentedAt,
-      version: session.version,
-      sectionQuestions: questions.map((q) => ({
-        key: q.key,
-        prompt: q.prompt,
-        dataset: (q.dataset as { format: 'csv'; text: string } | null) ?? null,
-        code: (q.code as { language: string; text: string } | null) ?? null,
-        timeMinutes: q.timeMinutes ?? null,
-      })),
-      now: new Date(),
-    });
+    await this.view.addEvents(await this.view.load(token), events);
   }
 }

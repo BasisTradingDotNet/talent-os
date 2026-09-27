@@ -3,6 +3,8 @@ import type { Prisma, Question as QuestionRow } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import type {
   DimensionRating,
+  IntegrityEvent,
+  RecordingSegment,
   ResponseRecord,
   Session,
   SessionSummary,
@@ -12,18 +14,37 @@ import type {
   Verdict,
 } from '../contracts/api';
 import type { SectionSeed } from '../contracts/kit-seed';
+import { INTEGRITY_FLAG_TYPES } from '../candidate-view/consent';
 import { cfg } from '../common/config';
 import { bad } from '../common/validate';
 import { KitService, LoadedKit } from '../kit/kit.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { sectionEndsAt } from './timing';
 import { computeVerdict, elapsedSeconds } from './verdict';
 
-export const SESSION_INCLUDE = {
+/** Enough for a SessionSummary (lists): counts only for recordings and integrity flags. */
+export const SESSION_SUMMARY_INCLUDE = {
   responses: true,
   ratings: true,
   application: { include: { candidate: { select: { id: true, name: true } } } },
+  _count: {
+    select: {
+      segments: { where: { deletedAt: null } },
+      events: { where: { type: { in: [...INTEGRITY_FLAG_TYPES] } } } },
+  },
 } satisfies Prisma.SessionInclude;
 
+/** Cap on the integrity timeline returned with a Session (oldest first). */
+export const EVENTS_CAP = 500;
+
+/** A full Session: live segments (paths stay server-side) and the integrity timeline. */
+export const SESSION_INCLUDE = {
+  ...SESSION_SUMMARY_INCLUDE,
+  segments: { where: { deletedAt: null }, orderBy: [{ startedAt: 'asc' }, { id: 'asc' }] },
+  events: { orderBy: [{ at: 'asc' }, { id: 'asc' }], take: EVENTS_CAP },
+} satisfies Prisma.SessionInclude;
+
+export type SessionSummaryRow = Prisma.SessionGetPayload<{ include: typeof SESSION_SUMMARY_INCLUDE }>;
 export type SessionRow = Prisma.SessionGetPayload<{ include: typeof SESSION_INCLUDE }>;
 
 export interface SectionContext {
@@ -65,6 +86,9 @@ export function toResponseRecord(r: SessionRow['responses'][number]): ResponseRe
     markedForReturn: r.markedForReturn,
     timeSpentSeconds: r.timeSpentSeconds,
     updatedAt: r.updatedAt.toISOString(),
+    candidateAnswer: r.candidateAnswer ?? null,
+    candidateAnswerAt: iso(r.candidateAnswerAt),
+    firstPresentedAt: iso(r.firstPresentedAt),
   };
 }
 
@@ -72,7 +96,31 @@ export function toRating(r: SessionRow['ratings'][number]): DimensionRating {
   return { dimensionId: r.dimensionId, rating: r.rating ?? null, note: r.note };
 }
 
-export function verdictFor(row: SessionRow, ctx: SectionContext): Verdict | null {
+/** Never includes the file path. */
+export function toSegment(s: SessionRow['segments'][number]): RecordingSegment {
+  return {
+    id: s.id,
+    stream: s.stream as RecordingSegment['stream'],
+    mimeType: s.mimeType,
+    startedAt: s.startedAt.toISOString(),
+    endedAt: iso(s.endedAt),
+    lastChunkAt: iso(s.lastChunkAt),
+    bytes: Number(s.bytes),
+    chunks: s.chunks,
+  };
+}
+
+export function toEvent(e: SessionRow['events'][number]): IntegrityEvent {
+  return {
+    type: e.type as IntegrityEvent['type'],
+    at: e.at.toISOString(),
+    clientAt: iso(e.clientAt),
+    questionKey: e.questionKey ?? null,
+    detail: e.detail ?? null,
+  };
+}
+
+export function verdictFor(row: SessionSummaryRow, ctx: SectionContext): Verdict | null {
   if (ctx.section.scoring !== 'rubric') return null;
   return computeVerdict(
     ctx.section,
@@ -108,10 +156,18 @@ export function toSession(row: SessionRow, kit: LoadedKit, now = new Date()): Se
     ratings: [...row.ratings].sort((a, b) => a.dimensionId - b.dimensionId).map(toRating),
     verdict: verdictFor(row, ctx),
     serverNow: now.toISOString(),
+    recording: {
+      required: row.recordingRequired,
+      consentAt: iso(row.consentAt),
+      segments: row.segments.map(toSegment),
+    },
+    events: row.events.map(toEvent),
+    sectionEndsAt: iso(sectionEndsAt(row.startedAt, ctx.section.timeMinutes, row.extensionMinutes)),
+    extensionMinutes: row.extensionMinutes,
   };
 }
 
-export function toSummary(row: SessionRow, kit: LoadedKit, superseded: boolean): SessionSummary {
+export function toSummary(row: SessionSummaryRow, kit: LoadedKit, superseded: boolean): SessionSummary {
   const ctx = sectionContext(kit, row.section);
   return {
     id: row.id,
@@ -127,6 +183,8 @@ export function toSummary(row: SessionRow, kit: LoadedKit, superseded: boolean):
     trapsNoticed: row.responses.filter((r) => r.trapNoticed).length,
     bonusesGiven: row.responses.filter((r) => r.bonusGiven).length,
     superseded,
+    recorded: row._count.segments > 0,
+    integrityFlags: row._count.events,
   };
 }
 
@@ -149,11 +207,18 @@ export class SessionsService {
     return this.present_(orgId, id);
   }
 
-  async create(orgId: string, interviewer: string, candidateId: string, sectionKey: string): Promise<Session> {
+  async create(
+    orgId: string,
+    interviewer: string,
+    candidateId: string,
+    sectionKey: string,
+    recordingRequired?: boolean,
+  ): Promise<Session> {
     const candidate = await this.prisma.candidate.findFirst({ where: { id: candidateId, orgId } });
     if (!candidate) throw new NotFoundException('candidate not found');
     const kit = await this.kits.activeKit(orgId);
-    if (!kit.sections.some((s) => s.key === sectionKey)) bad(`unknown section ${sectionKey}`);
+    const section = kit.sections.find((s) => s.key === sectionKey);
+    if (!section) bad(`unknown section ${sectionKey}`);
     const application =
       (await this.prisma.application.findUnique({
         where: { candidateId_jobId: { candidateId, jobId: kit.row.jobId } },
@@ -168,10 +233,22 @@ export class SessionsService {
         status: 'ready',
         interviewer,
         candidateToken: randomBytes(24).toString('base64url'),
+        recordingRequired: recordingRequired ?? !!section.candidateView,
       },
       include: SESSION_INCLUDE,
     });
     return toSession(row, kit);
+  }
+
+  /** v1.1: adds minutes to the section time limit; bumps the candidate version so the countdown updates. */
+  async extend(orgId: string, id: string, minutes: number): Promise<Session> {
+    const row = await this.row(orgId, id);
+    if (row.status !== 'ready' && row.status !== 'live') throw new ConflictException(`cannot extend a ${row.status} session`);
+    await this.prisma.session.update({
+      where: { id },
+      data: { extensionMinutes: { increment: minutes }, version: { increment: 1 } },
+    });
+    return this.present_(orgId, id);
   }
 
   async start(orgId: string, id: string): Promise<Session> {
@@ -207,6 +284,18 @@ export class SessionsService {
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
       await this.accountTime(tx, row, now);
+      if (questionKey !== null) {
+        // v1: remember the first presentation (never reset) so answers and playback can key off it.
+        await tx.response.upsert({
+          where: { sessionId_questionKey: { sessionId: id, questionKey } },
+          create: { sessionId: id, questionKey, firstPresentedAt: now },
+          update: {},
+        });
+        await tx.response.updateMany({
+          where: { sessionId: id, questionKey, firstPresentedAt: null },
+          data: { firstPresentedAt: now },
+        });
+      }
       await tx.session.update({
         where: { id },
         data: {

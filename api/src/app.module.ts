@@ -1,6 +1,9 @@
 import { Controller, Get, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
 import { CandidateViewController } from './candidate-view/candidate-view.controller';
+import { CandidateViewService } from './candidate-view/candidate-view.service';
+import { CandidateRateLimitGuard } from './candidate-view/rate-limit';
 import { CandidatesController } from './candidates/candidates.controller';
 import { CandidatesService } from './candidates/candidates.service';
 import { ExportsController } from './exports/exports.controller';
@@ -8,6 +11,7 @@ import { IdentityGuard, Public } from './identity/identity.guard';
 import { KitController } from './kit/kit.controller';
 import { KitService } from './kit/kit.service';
 import { PrismaModule } from './prisma/prisma.module';
+import { RecordingsService } from './recordings/recordings.service';
 import { SeedService } from './seed/seed.service';
 import { SessionsController } from './sessions/sessions.controller';
 import { SessionsService } from './sessions/sessions.service';
@@ -22,7 +26,7 @@ export class HealthController {
 }
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, ScheduleModule.forRoot()],
   controllers: [
     HealthController,
     KitController,
@@ -37,6 +41,9 @@ export class HealthController {
     CandidatesService,
     SessionsService,
     SeedService,
+    RecordingsService,
+    CandidateViewService,
+    CandidateRateLimitGuard,
   ],
 })
 export class AppModule {}

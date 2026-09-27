@@ -69,10 +69,10 @@ Two answers shaped everything else:
 
 | # | Question | Decision | Other options | What it means |
 |---|---|---|---|---|
-| 21 | Where do candidates do sheet and code work? | **External tools, as in the kit** ★ | Built-in grid + code pad · sandboxed execution | As built: Sheets/Excel on screen share plus copy-as-TSV. The app never executes candidate code. |
+| 21 | Where do candidates do sheet and code work? | **External tools, as in the kit** ★ — **revised by Q55/Q56:** answers are now typed into the app; spreadsheet work stays in the candidate's own Sheets/Excel, captured by the screen recording | Built-in grid + code pad · sandboxed execution | As built: Sheets/Excel on screen share plus copy-as-TSV. The app never executes candidate code. |
 | 22 | Can several interviewers run one session? | **Yes: one driver, private scoring** ★ | One console; others file scorecards later | Needed for Stage 4 with Jonathan Mathai and Dr. Nag. |
-| 23 | Record and transcribe interviews? | **Later, consent-based: upload the Teams transcript and AI drafts per-question notes** — adjusted for Q4 (★ assumed a meeting bot or in-app video) | In v1 · never | No bot and no stored video. The transcript is the only artefact. |
-| 24 | Live-test integrity? | **Soft signals** ★ | Full proctoring · none | The candidate view logs tab switches, focus loss and pastes for the interviewer. |
+| 23 | Record and transcribe interviews? | **Revised by Q55:** the written test is recorded in the candidate's browser (camera, microphone, entire screen) after explicit consent. Transcript-to-notes remains a later idea. | In v1 · never | No bot and no stored video. The transcript is the only artefact. |
+| 24 | Live-test integrity? | **Soft signals** ★ — **revised by Q55:** full recording plus the soft signals (tab switches, focus loss, paste lengths, share stopped) | Full proctoring · none | The candidate view logs tab switches, focus loss and pastes for the interviewer. |
 
 ## 7 · Scorecards and decisions — delegated
 
@@ -153,6 +153,23 @@ already about four hours a day, so the model decides the order of work, not the 
 throughput, then choose. The expected cost is roughly 10–20 s per CV, which puts 500 a day at a few
 hours of background compute. Use a standard instruct model, not the uncensored variant also
 installed there.
+
+## 15 · Recorded written test — answered by Hitesh (follow-up)
+
+**Requirement:** candidates sit the written test *in the app*, with video, audio and screen recorded.
+
+| # | Question | Decision | Other options | What it means |
+|---|---|---|---|---|
+| 55 | How do candidates sit the written test in the app? | **Live + recorded** — the interviewer drives the session as today; the candidate types answers in the app while it records | Both, chosen per session ★ · self-paced + recorded only | Answers appear in the console as they're typed. Recording needs desktop Chrome or Edge. |
+| 56 | Where do candidates do spreadsheet work? | **Own Sheets/Excel, recorded** ★ | Spreadsheet built into the app | The screen recording shows the working, and the final numbers are typed into the app. |
+| 57 | How long are recordings kept? | **90 days after the hiring decision** ★ | 12 months like other data · until the role is filled | A daily job deletes them. Undecided candidates fall back to 12 months after the session. |
+| 58 | What comes first? | **Recorded test first, benchmark in parallel** ★ | Benchmark first · recorded test only | Built on `feat/recorded-test` (PR #6); benchmark preparation runs alongside. |
+
+**Safeguards (contract v1):**
+- No recording starts before the candidate accepts a versioned consent notice, which names what is recorded, why, who sees it and when it's deleted.
+- Recordings are served only on protected paths, never under `/api/candidate/`.
+- Integrity events store counts, never content.
+- A candidate who needs an adjustment can be run without recording (`recordingRequired: false`).
 
 ## Operational decisions made on the day
 

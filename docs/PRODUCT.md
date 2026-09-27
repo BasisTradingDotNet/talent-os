@@ -167,7 +167,12 @@ full ATS. **Later** means once the need shows up.
   - Interviewer console: navigator, presentation separate from peeking, hidden-by-default answers/rubrics/traps, 0–3 scoring, notes, flags, skip/mark, timers, running totals, verdicts.
   - Dimension scorecards for S1/S4.
   - Candidate view on a token link: prompt, dataset table, copy as TSV, code, timer.
-- **Phase 1:** multi-panellist sessions with one driver and private scoring (Q22); integrity soft signals (Q24).
+- **v1 (recorded written test, Q55–Q57):**
+  - Candidates type answers in the app while the interviewer drives, and answers appear in the console live.
+  - After consent, the candidate's browser records camera + microphone and the entire screen, uploaded in chunks so a dropped connection loses seconds.
+  - Integrity flags: tab switches, focus loss, paste lengths, share stopped.
+  - Review playback jumps to each question.
+- **Phase 1:** multi-panellist sessions with one driver and private scoring (Q22).
 - **Later:** built-in grid and code pad, if external tools stop being enough (Q21).
 
 ### 6.8 Scorecards & decisions
@@ -211,6 +216,7 @@ full ATS. **Later** means once the need shows up.
 ### 6.14 Compliance & AI
 - **Phase 1:**
   - Local model only for candidate data (Q44), with protected-characteristic stripping before classification (§5).
+  - Recording consent (versioned notice) and deletion 90 days after the hiring decision (Q57), shipped with v1.
   - Knockout safeguards (Q53).
   - Privacy notice on candidate pages.
   - Retention job: anonymise unsuccessful candidates after 12 months, or 24 with consent (Q45).
@@ -222,6 +228,7 @@ full ATS. **Later** means once the need shows up.
 | Phase | Goal | Exit criteria |
 |---|---|---|
 | **v0** (27 Sep 2026) | Run the Quant Trader interview on the app today | All four stages usable; candidate view leak-free; data persisted; published behind Access |
+| **v1** (27–28 Sep 2026) | Recorded written test | Typed answers in the app, camera + mic + screen recording with consent, integrity flags, review playback, 90-day retention job |
 | **Phase 1** (≈ 3–4 weeks) | **Screen 500 a day** | Careers site + tracked links, hiring@ ingestion, knockouts, local-model extraction + screening rubric + tiers, triage queue, applications + stage board, users/roles/SSO, blind scorecards, debrief + decision record, Slack nudges, Access JWT verification, UPS + off-site backups (Q48) |
 | **Phase 2** (≈ 6–8 weeks) | A full ATS for any role | Candidate portal, take-home portal with seeded datasets, email templates + SMTP, offers + references + hand-off, analytics + tier calibration, AI kit drafting, retention, multi-panellist sessions |
 | **Later** | Grow with the desk | M365 calendar/self-booking, interviewer qualifications, question variants at scale, transcripts to draft notes, a second org |

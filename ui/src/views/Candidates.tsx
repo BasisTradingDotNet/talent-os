@@ -5,7 +5,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import type { CandidateSummary, SectionDef, SessionSummary } from '@contracts/api';
 import { api, exportUrls } from '../api/client';
 import { qk, useCandidates, useKit } from '../api/hooks';
-import { meanRating, sectionsByStage } from '../lib/summary';
+import { fmtScore, meanRating, sectionsByStage } from '../lib/summary';
 import { fmtDate } from '../lib/time';
 import { ResultChip } from './Console';
 
@@ -131,10 +131,10 @@ function SectionCell({ c, s }: { c: CandidateSummary; s: SectionDef }) {
     const v = ss.verdict;
     return (
       <div className="space-y-0.5 text-xs">
-        <div className="text-sm font-medium">{v ? `${v.total}/${v.max}` : '—'}</div>
+        <div className="text-sm font-medium">{v ? `${fmtScore(v.total)}/${v.max}` : '—'}</div>
         {v?.subtotals.map((t) => (
           <div key={t.domain} className="text-slate-600">
-            {t.label} {t.total}/{t.max}
+            {t.label} {fmtScore(t.total)}/{t.max}
           </div>
         ))}
         <div className="text-slate-600">

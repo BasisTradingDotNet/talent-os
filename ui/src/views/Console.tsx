@@ -28,6 +28,7 @@ import { CopyButton } from '../components/CopyButton';
 import { DatasetTable } from '../components/DatasetTable';
 import { Markdown } from '../components/Markdown';
 import { Countdown, Elapsed } from '../components/Timer';
+import { fmtScore } from '../lib/summary';
 import { fmtClock, fmtDate, serverOffset, useTick } from '../lib/time';
 
 /** Events counted as integrity flags (matches SessionSummary.integrityFlags). */
@@ -57,6 +58,10 @@ const EMPTY_RESPONSE = (key: string): ResponseRecord => ({
   candidateAnswer: null,
   candidateAnswerAt: null,
   firstPresentedAt: null,
+  choice: null,
+  autoScore: null,
+  aiDraftNote: null,
+  aiDraftAt: null,
 });
 
 type Reveal = { modelAnswer: boolean; rubric: boolean; trap: boolean; good: boolean };
@@ -405,12 +410,12 @@ export function RunningTotal({ verdict }: { verdict: Verdict }) {
   return (
     <span className="text-sm text-slate-700" data-testid="running-total">
       <strong>
-        {verdict.total}/{verdict.max}
+        {fmtScore(verdict.total)}/{verdict.max}
       </strong>
       {verdict.subtotals.map((s) => (
         <span key={s.domain}>
           {' · '}
-          {s.label} {s.total}/{s.max}
+          {s.label} {fmtScore(s.total)}/{s.max}
         </span>
       ))}
     </span>

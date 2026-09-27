@@ -4,7 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import type { CandidateDetail, Kit, SectionDef, Session, SessionSummary } from '@contracts/api';
 import { api } from '../api/client';
 import { qk, useCandidate, useKit, useMe } from '../api/hooks';
-import { meanRating, sectionsByStage } from '../lib/summary';
+import { fmtScore, meanRating, sectionsByStage } from '../lib/summary';
 import { fmtDate } from '../lib/time';
 
 export function Scorecard() {
@@ -109,9 +109,9 @@ function SectionBlock({ s, kit, ss, full }: { s: SectionDef; kit: Kit; ss: Sessi
         <table className="mt-2 w-full">
           <tbody>
             {ss.verdict?.subtotals.map((t) => (
-              <Row key={t.domain} k={t.label} v={`${t.total} / ${t.max}`} />
+              <Row key={t.domain} k={t.label} v={`${fmtScore(t.total)} / ${t.max}`} />
             ))}
-            <Row k="Total" v={ss.verdict ? `${ss.verdict.total} / ${ss.verdict.max}` : '—'} />
+            <Row k="Total" v={ss.verdict ? `${fmtScore(ss.verdict.total)} / ${ss.verdict.max}` : '—'} />
             <Row k="Thresholds" v={s.bands.length ? s.bands.map((b) => `≥ ${b.min} ${b.label}`).join(' · ') : '—'} />
             <Row k="Result" v={ss.verdict?.complete ? ss.verdict.result : `incomplete (${ss.verdict?.scored ?? 0} scored, ${ss.verdict?.skipped ?? 0} skipped)`} />
             <Row k="Traps noticed / bonuses" v={`${ss.trapsNoticed} / ${ss.bonusesGiven}`} />

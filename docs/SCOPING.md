@@ -159,5 +159,12 @@ installed there.
 - **URL:** `https://hiring.basistrading.net` (Hitesh). The console sits behind Cloudflare Access
   (`hiteshbhatia3559@gmail.com`). Only `/c/*`, `/api/candidate/*` and `/assets/*` bypass it.
 - **Today's interview covers every stage**, so v0 supports S1, Sets A/B/C, take-home marking and S4.
+- **Console for admins; public site for candidates** (Hitesh, asked about Stage 4 panel access). The
+  console stays behind Access for admins only, and candidates use public pages: the careers site and
+  token links. Other admins are added to the Access policy by email.
+- **Access JWT verification stays off** (Hitesh). The API keeps trusting the Access email header,
+  behind the Access path rules and the nginx guards.
+- **Phase 1 order: benchmark the local model, then build** (Hitesh). The benchmark compares
+  `qwen3.5:122b` and `qwen38-27b` on synthetic, labelled CVs before any screening code is written.
 - **Merges wait for Hitesh's review.** Today's deploy runs from a locally assembled branch, and
   `main` changes only through reviewed PRs.

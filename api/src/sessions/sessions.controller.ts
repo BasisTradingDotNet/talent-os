@@ -147,8 +147,17 @@ export class SessionsController {
             'X-Content-Type-Options': 'nosniff',
           },
         },
-        // Errors after the headers went out (client aborted a seek) are not reportable any more.
-        (err) => (err && !res.headersSent ? reject(err) : resolve()),
+        (err) => {
+          if (!err) return resolve();
+          // Errors after the headers went out (client aborted a seek) are not reportable any more.
+          if (res.headersSent) return resolve();
+          // An empty or still-growing segment can't satisfy the player's metadata range request.
+          if ((err as { status?: number }).status === 416) {
+            res.status(416).end();
+            return resolve();
+          }
+          reject(err);
+        },
       );
     });
   }

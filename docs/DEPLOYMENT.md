@@ -64,6 +64,18 @@ be empty in production.
 than trusting the email header. This was left off on launch day because a login through Access is
 needed to test it.
 
+## Recordings
+
+Candidate recordings (v1) live in the `talent-os_recordings` volume, mounted at `/recordings` in the
+API container.
+- **Size:** about 600 MB per hour of test (camera ≈ 400 kbps, screen ≈ 900 kbps at 5 fps).
+- **Retention:** the API deletes recordings `RECORDING_RETENTION_DAYS` (90) after the hiring
+  decision; undecided candidates fall back to 12 months after the session.
+- **Exposure:** recordings are served only on the protected `/api/sessions/:id/recordings/*`, never
+  on the public candidate path.
+- **Backups:** the volume is excluded from the database dump below, on purpose. Recordings are
+  short-lived evidence, not records.
+
 ## Backups
 
 Interview data lives in the `talent-os_pgdata` volume on the Studio. Take a snapshot before any

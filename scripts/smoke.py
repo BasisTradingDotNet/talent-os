@@ -20,7 +20,8 @@ BASE = os.environ.get("BASE", "http://localhost:8170").rstrip("/")
 EMAIL = os.environ.get("EMAIL", "smoke@basistrading.net")
 AUTH = {"cf-access-authenticated-user-email": EMAIL}
 
-STATE_KEYS = {"phase", "orgName", "sectionLabel", "instructions", "question", "presentedAt", "serverNow", "version"}
+STATE_KEYS = {"phase", "orgName", "sectionLabel", "instructions", "question", "presentedAt", "serverNow", "version",
+              "recording", "answer", "sectionEndsAt"}
 QUESTION_KEYS = {"position", "total", "prompt", "dataset", "code", "timeMinutes"}
 
 failures = []
@@ -50,7 +51,7 @@ def call(method, path, body=None, auth=True, expect=200):
     ok = (200 <= status < 300) if expect < 300 else status == expect
     if not ok:
         raise AssertionError(f"{method} {path} → {status} (expected {expect}): {raw[:300]}")
-    ctype_json = raw[:1] in "{["
+    ctype_json = bool(raw) and raw[0] in "{["
     return json.loads(raw) if ctype_json else raw
 
 
@@ -65,6 +66,77 @@ def secrets_of(questions):
             if v and len(v) >= 12:
                 out.add(v)
     return out
+
+
+def call_raw(method, path, data, headers=None, auth=False, expect=200):
+    """Raw-body request (recording chunks); returns (status, body bytes, headers)."""
+    req = urllib.request.Request(BASE + path, method=method, data=data)
+    if auth:
+        for k, v in AUTH.items():
+            req.add_header(k, v)
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, r.read(), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), dict(e.headers)
+
+
+def recorded_flow(cid, section):
+    """v1/v1.1: consent gate, chunk ordering, answers, events, extensions, protected playback."""
+    sk = section["key"]
+    sess = call("POST", "/api/sessions", {"candidateId": cid, "section": sk, "recordingRequired": True}, expect=201)
+    sid, token = sess["id"], sess["candidateUrl"].rsplit("/c/", 1)[1]
+    cand = f"/api/candidate/{token}"
+    st = call("GET", f"{cand}/state", auth=False)
+    rec = st["recording"]
+    check("[rec] consent required before anything", rec["required"] and not rec["consentGiven"] and bool(rec["consentText"]))
+    check("[rec] state keys", set(st) == STATE_KEYS and set(rec) == {"required", "consentGiven", "consentText"}, sorted(st))
+    status, _, _ = call_raw("POST", f"{cand}/recordings", json.dumps({"stream": "camera", "mimeType": "video/webm"}).encode(),
+                            {"content-type": "application/json"})
+    check("[rec] recording refused before consent (409)", status == 409, str(status))
+    st = call("POST", f"{cand}/consent", {"accepted": True}, auth=False)
+    check("[rec] consent recorded", st["recording"]["consentGiven"] is True)
+    seg = call("POST", f"{cand}/recordings", {"stream": "camera", "mimeType": "video/webm;codecs=vp8,opus"}, auth=False)
+    seg_id = seg["segmentId"]
+    chunk = os.urandom(1024)
+    codes = []
+    for seq, body in ((0, chunk), (0, chunk), (2, chunk), (1, chunk)):
+        status, _, _ = call_raw("PUT", f"{cand}/recordings/{seg_id}/chunks/{seq}", body,
+                                {"content-type": "application/octet-stream"})
+        codes.append(status)
+    check("[rec] chunk ordering (ok, dup no-op, gap 409, ok)", codes == [200, 200, 409, 200], str(codes))
+    call("POST", f"/api/sessions/{sid}/start", expect=201)
+    first = section["questionKeys"][0]
+    call("POST", f"/api/sessions/{sid}/present", {"questionKey": first}, expect=201)
+    st = call("GET", f"{cand}/state", auth=False)
+    check("[rec] section countdown set", bool(st["sectionEndsAt"]) and set(st["answer"] or {}) == {"text", "savedAt"}, str(st.get("answer")))
+    call("PUT", f"{cand}/answer", {"position": 1, "text": "mean 0.042, sharpe ~13 but meaningless"}, auth=False)
+    status, _, _ = call_raw("PUT", f"{cand}/answer", json.dumps({"position": 3, "text": "x"}).encode(),
+                            {"content-type": "application/json"})
+    check("[rec] answer to an unpresented question refused (409)", status == 409, str(status))
+    call("POST", f"{cand}/events", {"events": [
+        {"type": "paste", "clientAt": "2026-09-27T14:00:00Z", "detail": "12 chars"},
+        {"type": "tab_hidden", "clientAt": "2026-09-27T14:00:01Z"}]}, auth=False, expect=204)
+    before = call("GET", f"/api/sessions/{sid}")
+    after = call("POST", f"/api/sessions/{sid}/extend", {"minutes": 5}, expect=201)
+    s = after
+    resp = {r["questionKey"]: r for r in s["responses"]}
+    check("[rec] interviewer sees the typed answer", resp.get(first, {}).get("candidateAnswer", "").startswith("mean 0.042"))
+    check("[rec] segment stored (2 chunks, 2048 bytes)",
+          [(g["chunks"], g["bytes"]) for g in s["recording"]["segments"]] == [(2, 2048)], json.dumps(s["recording"]["segments"]))
+    evs = [(e["type"], e["questionKey"]) for e in s["events"] if e["type"] in ("paste", "tab_hidden")]
+    check("[rec] events stored with server-derived question", evs == [("paste", first), ("tab_hidden", first)], str(evs))
+    check("[rec] extension moves the deadline", after["extensionMinutes"] == 5 and after["sectionEndsAt"] > before["sectionEndsAt"])
+    status, body, hdrs = call_raw("GET", f"/api/sessions/{sid}/recordings/{seg_id}", None, {"range": "bytes=0-99"}, auth=True)
+    check("[rec] protected playback supports Range (206, 100 bytes)", status == 206 and body == chunk[:100], str(status))
+    status, _, _ = call_raw("GET", f"/api/sessions/{sid}/recordings/{seg_id}", None, {"range": "bytes=0-99"}, auth=False)
+    check("[rec] playback refused without identity", status in (401, 403), str(status))
+    status, _, _ = call_raw("GET", f"{cand}/recordings/{seg_id}", None)
+    check("[rec] no media on the public candidate path", status in (404, 405), str(status))
+    call("POST", f"{cand}/recordings/{seg_id}/stop", {}, auth=False, expect=204)
+    call("POST", f"/api/sessions/{sid}/end", expect=201)
 
 
 def main():
@@ -132,6 +204,10 @@ def main():
         if section["recommendationOptions"]:
             sess = call("PATCH", f"/api/sessions/{sess['id']}", {"recommendation": section["recommendationOptions"][0]})
         check(f"[{sk}] ratings saved", len([r for r in sess["ratings"] if r["rating"] == 4]) == len(section["dimensionIds"]))
+
+    rec_sections = [s for s in kit["sections"] if s["candidateView"]]
+    if rec_sections:
+        recorded_flow(cid, rec_sections[0])
 
     call("GET", "/api/candidate/not-a-real-token/state", auth=False, expect=404)
     check("unknown token → 404", True)

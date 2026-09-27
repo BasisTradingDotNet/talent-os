@@ -2,7 +2,16 @@
  * SECURITY-CRITICAL. Builds the only payload an unauthenticated request can receive.
  * Every field is assigned explicitly from an allowlisted source — never spread a DB row here.
  */
-import type { CandidatePhase, CandidateQuestion, CandidateState, Dataset, CodeBlock } from '../contracts/api';
+import type {
+  CandidateAnswer,
+  CandidatePhase,
+  CandidateQuestion,
+  CandidateRecording,
+  CandidateState,
+  CodeBlock,
+  Dataset,
+} from '../contracts/api';
+import { consentText } from './consent';
 
 export interface CandidateStateSection {
   candidateLabel: string;
@@ -18,6 +27,12 @@ export interface CandidateStateQuestion {
   timeMinutes: number | null;
 }
 
+/** The candidate's own typed answer for the presented question (from the Response row). */
+export interface CandidateStateAnswer {
+  candidateAnswer: string | null;
+  candidateAnswerAt: Date | null;
+}
+
 export interface CandidateStateInput {
   orgName: string;
   section: CandidateStateSection;
@@ -29,6 +44,14 @@ export interface CandidateStateInput {
   /** The section's questions in running order. */
   sectionQuestions: CandidateStateQuestion[];
   now: Date;
+  /** v1 */
+  recordingRequired: boolean;
+  consentAt: Date | null;
+  retentionDays: number;
+  /** v1: the Response row of the presented question, or null when none. */
+  presentedAnswer: CandidateStateAnswer | null;
+  /** v1.1: section countdown target (already computed from startedAt + minutes). */
+  sectionEndsAt: Date | null;
 }
 
 export function phaseFor(status: string, presentedQuestionKey: string | null): CandidatePhase {
@@ -60,6 +83,20 @@ export function buildCandidateState(input: CandidateStateInput): CandidateState 
     }
   }
 
+  const recording: CandidateRecording = {
+    required: !!input.recordingRequired,
+    consentGiven: !!input.consentAt,
+    consentText: input.recordingRequired ? consentText(input.orgName, input.retentionDays) : null,
+  };
+
+  let answer: CandidateAnswer | null = null;
+  if (phase === 'question') {
+    answer = {
+      text: input.presentedAnswer?.candidateAnswer ?? '',
+      savedAt: input.presentedAnswer?.candidateAnswerAt ? input.presentedAnswer.candidateAnswerAt.toISOString() : null,
+    };
+  }
+
   const state: CandidateState = {
     phase,
     orgName: input.orgName,
@@ -69,6 +106,9 @@ export function buildCandidateState(input: CandidateStateInput): CandidateState 
     presentedAt: phase === 'question' && input.presentedAt ? input.presentedAt.toISOString() : null,
     serverNow: input.now.toISOString(),
     version: input.version,
+    recording,
+    answer,
+    sectionEndsAt: input.sectionEndsAt ? input.sectionEndsAt.toISOString() : null,
   };
   return state;
 }

@@ -36,8 +36,13 @@ services:
       ACCESS_TEAM_DOMAIN: ${ACCESS_TEAM_DOMAIN:-}
       ACCESS_AUD: ${ACCESS_AUD:-}
       KIT_SEED_PATH: ${KIT_SEED_PATH:-/kits/quant-trader.seed.json}
+      # Candidate recordings (camera + screen). Never served on a public path. Deleted
+      # RECORDING_RETENTION_DAYS after the hiring decision (see docs/SCOPING.md Q57).
+      RECORDINGS_DIR: /recordings
+      RECORDING_RETENTION_DAYS: ${RECORDING_RETENTION_DAYS:-90}
     volumes:
       - ./private/kits:/kits:ro
+      - recordings:/recordings
     ports:
       - '127.0.0.1:${API_PORT:-4310}:4310'
     command: sh -c "npx prisma migrate deploy && node dist/main"
@@ -69,3 +74,4 @@ services:
 
 volumes:
   pgdata:
+  recordings:

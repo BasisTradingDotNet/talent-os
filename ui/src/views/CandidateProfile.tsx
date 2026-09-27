@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Download, FileText, Play } from 'lucide-react';
+import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { CandidateDetail, SectionDef, UpdateCandidate } from '@contracts/api';
 import { api, exportUrls } from '../api/client';
@@ -7,6 +8,7 @@ import { qk, useCandidate, useKit } from '../api/hooks';
 import { meanRating, sectionsByStage, verdictLine } from '../lib/summary';
 import { fmtDate } from '../lib/time';
 import { AutosaveTextarea, ResultChip, StatusChip } from './Console';
+import { RecordedBadge } from './Candidates';
 
 export function CandidateProfile() {
   const { id = '' } = useParams();
@@ -27,8 +29,10 @@ function Profile({ c, sections, decisionOptions }: { c: CandidateDetail; section
       void qc.invalidateQueries({ queryKey: qk.candidates });
     },
   });
+  const [recordFor, setRecordFor] = useState<Record<string, boolean>>({});
+  const wantsRecording = (s: SectionDef) => recordFor[s.key] ?? s.candidateView;
   const start = useMutation({
-    mutationFn: (section: string) => api().createSession({ candidateId: c.id, section }),
+    mutationFn: (s: SectionDef) => api().createSession({ candidateId: c.id, section: s.key, recordingRequired: wantsRecording(s) }),
     onSuccess: (s) => {
       qc.setQueryData(qk.session(s.id), s);
       void qc.invalidateQueries({ queryKey: qk.candidate(c.id) });
@@ -58,11 +62,17 @@ function Profile({ c, sections, decisionOptions }: { c: CandidateDetail; section
         <div className="space-y-4">
           <div className="card p-3">
             <h2 className="mb-2 text-sm font-semibold">Run a section</h2>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-2">
               {sections.map((s) => (
-                <button key={s.key} className="btn btn-sm" onClick={() => start.mutate(s.key)} disabled={start.isPending} data-testid={`start-${s.key}`}>
-                  <Play size={12} /> Start {s.label}
-                </button>
+                <div key={s.key} className="flex flex-wrap items-center gap-3">
+                  <button className="btn btn-sm" onClick={() => start.mutate(s)} disabled={start.isPending} data-testid={`start-${s.key}`}>
+                    <Play size={12} /> Start {s.label}
+                  </button>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600" title="The candidate must accept the recording notice and share camera, microphone and entire screen before the test starts">
+                    <input type="checkbox" checked={wantsRecording(s)} onChange={(e) => setRecordFor({ ...recordFor, [s.key]: e.target.checked })} data-testid={`record-${s.key}`} />
+                    Record candidate (camera, microphone, entire screen)
+                  </label>
+                </div>
               ))}
             </div>
             <p className="mt-2 text-xs text-slate-500">Starting a section again creates a new session; the old one is kept and marked superseded.</p>
@@ -99,6 +109,9 @@ function Profile({ c, sections, decisionOptions }: { c: CandidateDetail; section
                                 {ss.recommendation ?? '—'} <span className="text-xs text-slate-500">mean {meanRating(ss.ratings) ?? '—'}/5</span>
                               </span>
                             )}
+                          </td>
+                          <td className="py-1.5 pr-3 text-xs">
+                            <RecordedBadge ss={ss} />
                           </td>
                           <td className="py-1.5 pr-3 text-xs text-slate-500">{fmtDate(ss.startedAt ?? ss.createdAt)}</td>
                           <td className="py-1.5 text-xs">{ss.superseded && <span className="chip bg-slate-100 text-slate-500">superseded</span>}</td>

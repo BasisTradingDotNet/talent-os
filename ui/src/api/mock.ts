@@ -2,6 +2,10 @@
  * In-memory implementation of ApiClient for `VITE_MOCK=1`, seeded from kit/fixtures/sample.seed.json.
  * The store lives in localStorage so a candidate tab follows the console tab. Loaded by dynamic
  * import only; never part of the production bundle.
+ *
+ * v1: consent, answers, integrity events and recording segments are implemented with the same
+ * rules as the API (position checks, contiguous chunk sequence, time-up lock). Chunk bytes are
+ * counted, never stored.
  */
 import type {
   Band,
@@ -9,8 +13,10 @@ import type {
   CandidateState,
   CandidateSummary,
   DimensionRating,
+  IntegrityEvent,
   Kit,
   Question,
+  RecordingSegment,
   ResponseRecord,
   SectionDef,
   Session,
@@ -22,6 +28,11 @@ import { ApiError, type ApiClient } from './client';
 
 const KEY = 'talent-os-mock-v1';
 
+const CONSENT_TEXT =
+  'This written test is recorded. With your agreement, your camera, microphone and your entire screen will be recorded from now until the interviewer ends the session, and uploaded as you go. The recording is used only to assess this test, is seen only by the hiring team, and is deleted 90 days after a hiring decision. You can stop at any time by closing this tab.';
+
+const FLAG_TYPES = new Set(['tab_hidden', 'window_blur', 'paste', 'screen_share_stopped', 'camera_stopped']);
+
 interface CandidateRow {
   id: string;
   applicationId: string;
@@ -30,6 +41,7 @@ interface CandidateRow {
   source: string | null;
   notes: string | null;
   overallDecision: string | null;
+  decisionAt: string | null;
   level: string | null;
   compNote: string | null;
   createdAt: string;
@@ -54,6 +66,11 @@ interface SessionRow {
   recommendation: string | null;
   responses: ResponseRecord[];
   ratings: DimensionRating[];
+  recordingRequired: boolean;
+  consentAt: string | null;
+  segments: RecordingSegment[];
+  events: IntegrityEvent[];
+  extensionMinutes: number;
 }
 
 interface Store {
@@ -97,7 +114,23 @@ function load(seed: KitSeed): Store {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const s = JSON.parse(raw) as Store;
-      if (s && s.kit && s.candidates && s.sessions) return s;
+      if (s && s.kit && s.candidates && s.sessions) {
+        // Rows written by the v0 mock lack the v1 fields.
+        for (const row of s.sessions) {
+          row.recordingRequired ??= false;
+          row.consentAt ??= null;
+          row.segments ??= [];
+          row.events ??= [];
+          row.extensionMinutes ??= 0;
+          for (const r of row.responses) {
+            r.candidateAnswer ??= null;
+            r.candidateAnswerAt ??= null;
+            r.firstPresentedAt ??= null;
+          }
+        }
+        for (const c of s.candidates) c.decisionAt ??= null;
+        return s;
+      }
     }
   } catch {
     /* fall through */
@@ -191,6 +224,19 @@ export async function createMockClient(): Promise<ApiClient> {
     return s;
   };
 
+  const sessionByToken = (token: string) => {
+    const row = store.sessions.find((s) => s.token === token);
+    if (!row) throw new ApiError(404, 'Not found');
+    if (!section(row.section).candidateView) throw new ApiError(404, 'Not found');
+    return row;
+  };
+
+  const sectionEndsAt = (row: SessionRow): string | null => {
+    const sec = section(row.section);
+    if (!row.startedAt || sec.timeMinutes === null) return null;
+    return new Date(Date.parse(row.startedAt) + (sec.timeMinutes + row.extensionMinutes) * 60_000).toISOString();
+  };
+
   const toSession = (row: SessionRow): Session => {
     const sec = section(row.section);
     const cand = store.candidates.find((c) => c.id === row.candidateId);
@@ -215,6 +261,10 @@ export async function createMockClient(): Promise<ApiClient> {
       ratings: row.ratings,
       verdict: computeVerdict(store.kit, sec, row.responses),
       serverNow: nowIso(),
+      recording: { required: row.recordingRequired, consentAt: row.consentAt, segments: row.segments },
+      events: row.events,
+      sectionEndsAt: sectionEndsAt(row),
+      extensionMinutes: row.extensionMinutes,
     });
   };
 
@@ -235,6 +285,8 @@ export async function createMockClient(): Promise<ApiClient> {
     trapsNoticed: row.responses.filter((r) => r.trapNoticed).length,
     bonusesGiven: row.responses.filter((r) => r.bonusGiven).length,
     superseded: isSuperseded(row),
+    recorded: row.segments.length > 0,
+    integrityFlags: row.events.filter((e) => FLAG_TYPES.has(e.type)).length,
   });
 
   const toCandidateSummary = (c: CandidateRow): CandidateSummary => {
@@ -264,6 +316,7 @@ export async function createMockClient(): Promise<ApiClient> {
     notes: c.notes,
     level: c.level,
     compNote: c.compNote,
+    decisionAt: c.decisionAt,
     sessions: store.sessions
       .filter((s) => s.candidateId === c.id)
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
@@ -283,6 +336,9 @@ export async function createMockClient(): Promise<ApiClient> {
         markedForReturn: false,
         timeSpentSeconds: 0,
         updatedAt: nowIso(),
+        candidateAnswer: null,
+        candidateAnswerAt: null,
+        firstPresentedAt: null,
       };
       row.responses.push(r);
     }
@@ -302,6 +358,12 @@ export async function createMockClient(): Promise<ApiClient> {
   const commit = (row?: SessionRow) => {
     if (row) row.version += 1;
     save(store);
+  };
+
+  const segmentOf = (row: SessionRow, segmentId: string) => {
+    const seg = row.segments.find((s) => s.id === segmentId);
+    if (!seg) throw new ApiError(404, 'Segment not found');
+    return seg;
   };
 
   const delay = () => new Promise((r) => setTimeout(r, 30));
@@ -327,7 +389,7 @@ export async function createMockClient(): Promise<ApiClient> {
       await delay();
       fresh();
       candidateRow(body.candidateId);
-      section(body.section);
+      const sec = section(body.section);
       const id = nextId('s');
       const row: SessionRow = {
         id,
@@ -348,6 +410,11 @@ export async function createMockClient(): Promise<ApiClient> {
         recommendation: null,
         responses: [],
         ratings: [],
+        recordingRequired: body.recordingRequired ?? sec.candidateView,
+        consentAt: null,
+        segments: [],
+        events: [],
+        extensionMinutes: 0,
       };
       store.sessions.push(row);
       commit();
@@ -378,6 +445,10 @@ export async function createMockClient(): Promise<ApiClient> {
       accountTime(row);
       row.presentedQuestionKey = body.questionKey;
       row.presentedAt = body.questionKey === null ? null : nowIso();
+      if (body.questionKey !== null) {
+        const r = upsertResponse(row, body.questionKey, {});
+        if (!r.firstPresentedAt) r.firstPresentedAt = row.presentedAt;
+      }
       commit(row);
       return toSession(row);
     },
@@ -434,6 +505,16 @@ export async function createMockClient(): Promise<ApiClient> {
       commit(row);
       return toSession(row);
     },
+    async extendSession(id, body) {
+      await delay();
+      fresh();
+      const row = sessionRow(id);
+      if (row.status === 'completed') throw new ApiError(409, 'Session is completed');
+      if (!Number.isInteger(body.minutes) || body.minutes < 1 || body.minutes > 60) throw new ApiError(400, 'minutes must be an integer 1–60');
+      row.extensionMinutes += body.minutes;
+      commit(row);
+      return toSession(row);
+    },
     async listCandidates() {
       await delay();
       fresh();
@@ -452,6 +533,7 @@ export async function createMockClient(): Promise<ApiClient> {
         source: body.source?.trim() || null,
         notes: body.notes?.trim() || null,
         overallDecision: null,
+        decisionAt: null,
         level: null,
         compNote: null,
         createdAt: nowIso(),
@@ -469,6 +551,7 @@ export async function createMockClient(): Promise<ApiClient> {
       await delay();
       fresh();
       const row = candidateRow(id);
+      if ('overallDecision' in body && body.overallDecision !== row.overallDecision) row.decisionAt = body.overallDecision ? nowIso() : null;
       Object.assign(row, body);
       commit();
       return toCandidateDetail(row);
@@ -476,15 +559,20 @@ export async function createMockClient(): Promise<ApiClient> {
     async getCandidateState(token) {
       await delay();
       fresh();
-      const row = store.sessions.find((s) => s.token === token);
-      if (!row) throw new ApiError(404, 'Not found');
+      const row = sessionByToken(token);
       const sec = section(row.section);
-      if (!sec.candidateView) throw new ApiError(404, 'Not found');
       const base = {
         orgName: store.orgName,
         sectionLabel: sec.candidateLabel,
         serverNow: nowIso(),
         version: row.version,
+        recording: {
+          required: row.recordingRequired,
+          consentGiven: row.consentAt !== null,
+          consentText: row.recordingRequired ? CONSENT_TEXT : null,
+        },
+        answer: null,
+        sectionEndsAt: sectionEndsAt(row),
       };
       if (row.status === 'ready') {
         return { ...base, phase: 'waiting', instructions: null, question: null, presentedAt: null };
@@ -503,6 +591,7 @@ export async function createMockClient(): Promise<ApiClient> {
       }
       const q = store.kit.questions.find((x) => x.key === row.presentedQuestionKey);
       if (!q) throw new ApiError(404, 'Not found');
+      const r = row.responses.find((x) => x.questionKey === q.key);
       const state: CandidateState = {
         ...base,
         phase: 'question',
@@ -516,8 +605,101 @@ export async function createMockClient(): Promise<ApiClient> {
           timeMinutes: q.timeMinutes,
         },
         presentedAt: row.presentedAt,
+        answer: { text: r?.candidateAnswer ?? '', savedAt: r?.candidateAnswerAt ?? null },
       };
       return state;
+    },
+    async postConsent(token) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      if (!row.recordingRequired) throw new ApiError(409, 'Recording is not required for this session');
+      if (!row.consentAt) {
+        row.consentAt = nowIso();
+        row.events.push({ type: 'consent_given', at: row.consentAt, clientAt: row.consentAt, questionKey: row.presentedQuestionKey, detail: null });
+        commit(row);
+      }
+      return client.getCandidateState(token);
+    },
+    async saveAnswer(token, body) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      if (row.status !== 'live') throw new ApiError(409, 'Session is not live');
+      const sec = section(row.section);
+      const key = sec.questionKeys[body.position - 1];
+      if (!key) throw new ApiError(400, 'Unknown position');
+      if (typeof body.text !== 'string' || body.text.length > 20_000) throw new ApiError(400, 'text must be at most 20,000 characters');
+      const r = row.responses.find((x) => x.questionKey === key);
+      const presentedNow = row.presentedQuestionKey === key;
+      if (!presentedNow && !r?.firstPresentedAt) throw new ApiError(409, 'Question has not been presented');
+      const ends = sectionEndsAt(row);
+      if (ends && Date.now() > Date.parse(ends) + 15_000) throw new ApiError(409, "Time's up", { reason: 'time_up' });
+      const savedAt = nowIso();
+      upsertResponse(row, key, { candidateAnswer: body.text, candidateAnswerAt: savedAt });
+      commit();
+      return { savedAt };
+    },
+    async startRecording(token, body) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      if (!row.consentAt) throw new ApiError(409, 'Consent has not been given');
+      if (row.status === 'completed') throw new ApiError(409, 'Session is completed');
+      if (!/^video\/(webm|mp4)/.test(body.mimeType)) throw new ApiError(400, 'Unsupported mimeType');
+      if (body.stream !== 'camera' && body.stream !== 'screen') throw new ApiError(400, 'Unknown stream');
+      const seg: RecordingSegment = {
+        id: nextId('seg'),
+        stream: body.stream,
+        mimeType: body.mimeType,
+        startedAt: nowIso(),
+        endedAt: null,
+        lastChunkAt: null,
+        bytes: 0,
+        chunks: 0,
+      };
+      row.segments.push(seg);
+      commit();
+      return { segmentId: seg.id };
+    },
+    async putChunk(token, segmentId, seq, blob) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      const seg = segmentOf(row, segmentId);
+      if (blob.size > 8 * 1024 * 1024) throw new ApiError(413, 'Chunk too large');
+      if (seq < seg.chunks) return { received: seg.chunks };
+      if (seq > seg.chunks) throw new ApiError(409, 'Chunk out of order', { expected: seg.chunks });
+      seg.chunks += 1;
+      seg.bytes += blob.size;
+      seg.lastChunkAt = nowIso();
+      commit();
+      return { received: seg.chunks };
+    },
+    async stopRecording(token, segmentId) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      const seg = segmentOf(row, segmentId);
+      if (!seg.endedAt) seg.endedAt = nowIso();
+      commit();
+    },
+    async postEvents(token, body) {
+      await delay();
+      fresh();
+      const row = sessionByToken(token);
+      if (!Array.isArray(body.events) || body.events.length > 50) throw new ApiError(400, 'events: max 50 per call');
+      const at = nowIso();
+      for (const e of body.events) {
+        row.events.push({
+          type: e.type,
+          at,
+          clientAt: e.clientAt ?? null,
+          questionKey: row.presentedQuestionKey,
+          detail: e.detail ? String(e.detail).slice(0, 80) : null,
+        });
+      }
+      commit();
     },
   };
   return client;

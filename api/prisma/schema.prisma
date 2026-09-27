@@ -76,6 +76,8 @@ model Question {
   rubric            Json?
   trapOrBonus       String?
   whatGoodLooksLike String?
+  /// v1.2: MarketConfig for mode "market". NEVER sent to candidates.
+  market            Json?
 
   @@unique([kitId, key])
   @@index([kitId, section, number])
@@ -149,6 +151,7 @@ model Session {
   ratings              Rating[]
   segments             RecordingSegment[]
   events               SessionEvent[]
+  marketGames          MarketGame[]
 
   @@index([orgId, applicationId])
 }
@@ -226,4 +229,62 @@ model SessionEvent {
   detail      String?
 
   @@index([sessionId, at])
+}
+
+/// v1.2: one make-a-market game — a Question.market template instantiated for a session.
+/// config, rolls and trueValue are INTERVIEWER ONLY until the game is settled.
+model MarketGame {
+  id          String        @id @default(cuid())
+  sessionId   String
+  session     Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionKey String
+  /// dice | estimate
+  kind        String
+  /// open | settled
+  status      String        @default("open")
+  startedAt   DateTime      @default(now())
+  settledAt   DateTime?
+  /// MarketConfig snapshot taken when the game started.
+  config      Json
+  /// dice: the values rolled at start, in reveal order.
+  rolls       Json?
+  trueValue   Float
+  revealCount Int           @default(0)
+  quotes      MarketQuote[]
+  trades      MarketTrade[]
+
+  @@index([sessionId, startedAt])
+}
+
+/// v1.2: a two-sided quote the candidate put on the table.
+model MarketQuote {
+  id           String        @id @default(cuid())
+  gameId       String
+  game         MarketGame    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  bid          Float
+  ask          Float
+  size         Int
+  at           DateTime      @default(now())
+  /// How many reveals had happened when the quote was made.
+  revealsSoFar Int           @default(0)
+  trades       MarketTrade[]
+
+  @@index([gameId, at])
+}
+
+/// v1.2: the interviewer traded against the candidate quote (buy = lifted the ask, sell = hit the bid).
+model MarketTrade {
+  id      String       @id @default(cuid())
+  gameId  String
+  game    MarketGame   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  /// The quote that was hit; drives the skew-after-trade metric.
+  quoteId String?
+  quote   MarketQuote? @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  /// buy | sell (the interviewer side)
+  side    String
+  price   Float
+  size    Int
+  at      DateTime     @default(now())
+
+  @@index([gameId, at])
 }

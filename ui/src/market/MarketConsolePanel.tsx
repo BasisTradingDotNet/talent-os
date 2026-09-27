@@ -375,7 +375,7 @@ function Blotter({ trades }: { trades: MarketTrade[] }) {
               <th className="font-medium">You</th>
               <th className="text-right font-medium">Size</th>
               <th className="text-right font-medium">Price</th>
-              <th className="font-medium">Candidate</th>
+              <th className="pl-4 font-medium">Candidate</th>
             </tr>
           </thead>
           <tbody>
@@ -385,7 +385,7 @@ function Blotter({ trades }: { trades: MarketTrade[] }) {
                 <td className={t.side === 'buy' ? 'text-emerald-700' : 'text-red-700'}>{t.side === 'buy' ? 'Bought' : 'Sold'}</td>
                 <td className="text-right font-mono">{t.size}</td>
                 <td className="text-right font-mono">{fmtNum(t.price)}</td>
-                <td className="text-xs text-slate-500">{t.side === 'buy' ? 'sold at their ask' : 'bought at their bid'}</td>
+                <td className="pl-4 text-xs text-slate-500">{t.side === 'buy' ? 'sold at their ask' : 'bought at their bid'}</td>
               </tr>
             ))}
           </tbody>

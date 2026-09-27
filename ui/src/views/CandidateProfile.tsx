@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { CandidateDetail, SectionDef, UpdateCandidate } from '@contracts/api';
 import { api, exportUrls } from '../api/client';
 import { qk, useCandidate, useKit } from '../api/hooks';
-import { meanRating, sectionsByStage, verdictLine } from '../lib/summary';
+import { fmtScore, meanRating, sectionsByStage, verdictLine } from '../lib/summary';
 import { fmtDate } from '../lib/time';
 import { AutosaveTextarea, ResultChip, StatusChip } from './Console';
 import { RecordedBadge } from './Candidates';
@@ -40,6 +40,31 @@ function Profile({ c, sections, decisionOptions }: { c: CandidateDetail; section
     },
   });
 
+  // Start never piles up links: an unused or live link for the section is opened instead, and a
+  // re-sit of a completed section asks first (the earlier result is kept either way).
+  const forSection = (key: string) => c.sessions.filter((x) => x.section === key); // newest first
+  const openLink = (key: string) => {
+    const mine = forSection(key);
+    return mine.find((x) => x.status === 'live') ?? mine.find((x) => x.status === 'ready') ?? null;
+  };
+  const lastDone = (key: string) => forSection(key).find((x) => x.status === 'completed') ?? null;
+  const runSection = (s: SectionDef) => {
+    const open = openLink(s.key);
+    if (open) {
+      navigate(`/sessions/${open.id}`);
+      return;
+    }
+    const done = lastDone(s.key);
+    const score = done?.verdict ? ` (${fmtScore(done.verdict.total)}/${fmtScore(done.verdict.max)})` : '';
+    if (done && !window.confirm(`${c.name} has already completed ${s.label}${score}. Start a re-sit with a new link? The earlier result is kept.`)) return;
+    start.mutate(s);
+  };
+  const runLabel = (s: SectionDef) => {
+    const open = openLink(s.key);
+    if (open) return open.status === 'live' ? `Open ${s.label} (live)` : `Open ${s.label} (link not used yet)`;
+    return lastDone(s.key) ? `Re-sit ${s.label}` : `Start ${s.label}`;
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -65,8 +90,8 @@ function Profile({ c, sections, decisionOptions }: { c: CandidateDetail; section
             <div className="flex flex-col gap-2">
               {sections.map((s) => (
                 <div key={s.key} className="flex flex-wrap items-center gap-3">
-                  <button className="btn btn-sm" onClick={() => start.mutate(s)} disabled={start.isPending} data-testid={`start-${s.key}`}>
-                    <Play size={12} /> Start {s.label}
+                  <button className="btn btn-sm" onClick={() => runSection(s)} disabled={start.isPending} data-testid={`start-${s.key}`}>
+                    <Play size={12} /> {runLabel(s)}
                   </button>
                   <label className="flex items-center gap-1.5 text-xs text-slate-600" title="The candidate must accept the recording notice and share camera, microphone and entire screen before the test starts">
                     <input type="checkbox" checked={wantsRecording(s)} onChange={(e) => setRecordFor({ ...recordFor, [s.key]: e.target.checked })} data-testid={`record-${s.key}`} />
@@ -75,7 +100,7 @@ function Profile({ c, sections, decisionOptions }: { c: CandidateDetail; section
                 </div>
               ))}
             </div>
-            <p className="mt-2 text-xs text-slate-500">Starting a section again creates a new session; the old one is kept and marked superseded.</p>
+            <p className="mt-2 text-xs text-slate-500">Start opens the section's unused or live link if there is one. A re-sit creates a new link; the earlier result is kept.</p>
           </div>
 
           {sections.map((s) => {

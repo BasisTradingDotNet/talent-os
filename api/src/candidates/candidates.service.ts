@@ -23,22 +23,32 @@ export class CandidatesService {
   }
 
   async toDetail(c: CandidateRow, cache: KitCache): Promise<CandidateDetail> {
-    const rows = CandidatesService.sessionsOf(c);
-    const seen = new Set<string>();
+    const rows = CandidatesService.sessionsOf(c); // newest first
+    // A section's result is its newest session that actually ran (live or completed). A link that
+    // was never started only stands in while nothing has run, so an unused link — say, Start
+    // clicked twice — can never hide a real result. Sessions older than the result are superseded;
+    // an unused link newer than the result is simply pending. Cancelled sessions (v1.3) are listed
+    // but never a result, never superseding, and don't count towards the stage.
+    const ran = (r: { status: string }) => r.status === 'live' || r.status === 'completed';
+    const resultOf = new Map<string, { id: string; at: number }>();
+    for (const row of rows) {
+      if (ran(row) && !resultOf.has(row.section)) resultOf.set(row.section, { id: row.id, at: row.createdAt.getTime() });
+    }
+    for (const row of rows) {
+      if (row.status === 'ready' && !resultOf.has(row.section)) resultOf.set(row.section, { id: row.id, at: row.createdAt.getTime() });
+    }
     const sessions: SessionSummary[] = [];
     const latest: Record<string, SessionSummary> = {};
     let stageReached = 0;
     for (const row of rows) {
       const kit = await cache.get(row.kitId);
-      // v1.3: a cancelled session never ran. It is listed, but it is neither the section's latest
-      // result nor does it supersede an older real one, and it does not count towards the stage.
       const cancelled = row.status === 'cancelled';
-      const superseded = !cancelled && seen.has(row.section);
-      if (!cancelled) seen.add(row.section);
+      const result = resultOf.get(row.section);
+      const superseded = !cancelled && !!result && row.id !== result.id && row.createdAt.getTime() <= result.at;
       const summary = toSummary(row, kit, superseded);
       sessions.push(summary);
       if (cancelled) continue;
-      if (!superseded) latest[row.section] = summary;
+      if (result && row.id === result.id) latest[row.section] = summary;
       const stage = kit.sections.find((s) => s.key === row.section)?.stage ?? 0;
       if (stage > stageReached) stageReached = stage;
     }

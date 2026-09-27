@@ -1,0 +1,71 @@
+name: talent-os
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-talent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-talent}
+      POSTGRES_DB: ${POSTGRES_DB:-talent_os}
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5442}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-talent}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-talent}:${POSTGRES_PASSWORD:-talent}@postgres:5432/${POSTGRES_DB:-talent_os}
+      PORT: 4310
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8170}
+      DEFAULT_ORG_SLUG: ${DEFAULT_ORG_SLUG:-g20}
+      # Local-only fallback identity. Leave empty in production: Cloudflare Access supplies it.
+      DEV_USER_EMAIL: ${DEV_USER_EMAIL:-}
+      # Optional defence in depth: verify the Cf-Access-Jwt-Assertion header when both are set.
+      ACCESS_TEAM_DOMAIN: ${ACCESS_TEAM_DOMAIN:-}
+      ACCESS_AUD: ${ACCESS_AUD:-}
+      KIT_SEED_PATH: ${KIT_SEED_PATH:-/kits/quant-trader.seed.json}
+    volumes:
+      - ./private/kits:/kits:ro
+    ports:
+      - '127.0.0.1:${API_PORT:-4310}:4310'
+    command: sh -c "npx prisma migrate deploy && node dist/main"
+
+  ui:
+    build:
+      # Repo root, because the UI type-imports the contract from api/src/contracts.
+      context: .
+      dockerfile: ui/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - '127.0.0.1:${UI_PORT:-8170}:80'
+
+  # Publishes the UI at hiring.basistrading.net. Without CLOUDFLARE_TUNNEL_TOKEN the `tunnel`
+  # profile is not started and the stack runs local-only. The tunnel dials out, so nothing is
+  # port-forwarded. Cloudflare Access protects the hostname; only the token-gated candidate
+  # paths (/c/*, /api/candidate/*, /assets/*) bypass it. See docs/DEPLOYMENT.md.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.6.1
+    restart: unless-stopped
+    profiles: ['tunnel']
+    depends_on:
+      - ui
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env to run the tunnel}
+
+volumes:
+  pgdata:

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+.DS_Store
+test-results/
+playwright-report/
+
+# Real interview kits contain model answers and rubrics. They live here and in the database,
+# never in git: the org's default repository permission is "read", so every member — including
+# a future hire — can read every private repo.
+private/

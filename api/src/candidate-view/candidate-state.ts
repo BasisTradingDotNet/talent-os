@@ -124,7 +124,11 @@ export function buildCandidateState(input: CandidateStateInput): CandidateState 
     phase,
     orgName: input.orgName,
     sectionLabel: input.section.candidateLabel,
-    instructions: phase === 'intro' && input.section.showInstructions ? instructionsText : null,
+    // Self-paced candidates read the instructions before they press Start (still 'waiting').
+    instructions:
+      (phase === 'intro' || (phase === 'waiting' && !!input.section.selfPaced)) && input.section.showInstructions
+        ? instructionsText
+        : null,
     question,
     presentedAt: phase === 'question' && input.presentedAt ? input.presentedAt.toISOString() : null,
     serverNow: input.now.toISOString(),

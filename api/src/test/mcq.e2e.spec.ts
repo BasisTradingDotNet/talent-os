@@ -205,7 +205,9 @@ describe('v1.2 multiple choice + self-paced (e2e)', () => {
     await http.put(`${cand}/choice`).send({ position: 1, choice: 0 }).expect(409); // not live yet
     state = (await http.post(`${cand}/start`).expect(200)).body as CandidateState;
     assertLeakFree(state);
-    expect(state).toMatchObject({ phase: 'intro', instructions: 'Pick one option per question in Part M.', selfPaced: true });
+    // Start opens the candidate's first question (their own shuffled order).
+    expect(state).toMatchObject({ phase: 'question', instructions: null, selfPaced: true });
+    expect(state.question?.position).toBe(1);
     expect(state.sectionEndsAt).toBeTruthy();
     let s = await getSession(session.id);
     expect(s.status).toBe('live');
@@ -351,7 +353,7 @@ describe('v1.2 multiple choice + self-paced (e2e)', () => {
     expect(after.session.kitVersion).toBe('1.1');
     expect(after.session.candidateId).toBe(candidate.id);
     const state = (await http.post(`${after.cand}/start`).expect(200)).body as CandidateState;
-    expect(state.phase).toBe('intro');
+    expect(state.phase).toBe('question');
     expect((await getSession(before.session.id)).kitVersion).toBe('1.0'); // old session stays pinned
     const detail = (await http.get(`/api/candidates/${candidate.id}`).set(AUTH).expect(200)).body as CandidateDetail;
     expect(detail.sessions).toHaveLength(2);

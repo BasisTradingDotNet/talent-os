@@ -14,6 +14,7 @@ import json
 import re
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -43,12 +44,17 @@ def call(method, path, body=None, auth=True, expect=200):
     if body is not None:
         data = json.dumps(body).encode()
         req.add_header("content-type", "application/json")
-    try:
-        with urllib.request.urlopen(req, data=data, timeout=15) as r:
-            raw = r.read().decode()
-            status = r.status
-    except urllib.error.HTTPError as e:
-        raw, status = e.read().decode(), e.code
+    for attempt in range(8):
+        try:
+            with urllib.request.urlopen(req, data=data, timeout=15) as r:
+                raw = r.read().decode()
+                status = r.status
+        except urllib.error.HTTPError as e:
+            raw, status = e.read().decode(), e.code
+            if status == 429 and attempt < 7:  # per-token rate limit: honour Retry-After like the real client
+                time.sleep(float(e.headers.get("Retry-After") or 1))
+                continue
+        break
     ok = (200 <= status < 300) if expect < 300 else status == expect
     if not ok:
         raise AssertionError(f"{method} {path} → {status} (expected {expect}): {raw[:300]}")
@@ -112,7 +118,7 @@ def recorded_flow(cid, section):
     first = section["questionKeys"][0]
     call("POST", f"/api/sessions/{sid}/present", {"questionKey": first}, expect=201)
     st = call("GET", f"{cand}/state", auth=False)
-    check("[rec] section countdown set", bool(st["sectionEndsAt"]) and set(st["answer"] or {}) == {"text", "savedAt"}, str(st.get("answer")))
+    check("[rec] section countdown set", bool(st["sectionEndsAt"]) and set(st["answer"] or {}) == {"text", "savedAt", "choice"}, str(st.get("answer")))
     call("PUT", f"{cand}/answer", {"position": 1, "text": "mean 0.042, sharpe ~13 but meaningless"}, auth=False)
     status, _, _ = call_raw("PUT", f"{cand}/answer", json.dumps({"position": 3, "text": "x"}).encode(),
                             {"content-type": "application/json"})

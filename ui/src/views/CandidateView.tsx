@@ -154,8 +154,8 @@ export function CandidateView() {
   } else {
     body = (
       <>
-        {state.phase === 'waiting' && <Centered title="Please wait" body="Your interviewer will start shortly." />}
-        {state.phase === 'intro' && state.selfPaced && (
+        {state.phase === 'waiting' && !state.selfPaced && <Centered title="Please wait" body="Your interviewer will start shortly." />}
+        {(state.phase === 'waiting' || state.phase === 'intro') && state.selfPaced && (
           <SelfPacedIntro
             instructions={state.instructions}
             marking={state.marking}

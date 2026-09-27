@@ -75,6 +75,9 @@ export class CandidateViewController {
   @Header('Cache-Control', 'no-store')
   async start(@Param('token') token: string): Promise<CandidateState> {
     await this.view.start(await this.view.load(token));
+    // Open on the candidate's first question (their own shuffled order) unless they're already on one.
+    const started = await this.view.load(token);
+    if (!started.session.presentedQuestionKey) await this.view.navigate(started, 1);
     return this.view.state(await this.view.load(token));
   }
 

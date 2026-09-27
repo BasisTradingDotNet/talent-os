@@ -1,4 +1,5 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import type { Prisma, Question as QuestionRow } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import type {
@@ -20,7 +21,11 @@ import { bad } from '../common/validate';
 import { KitService, LoadedKit } from '../kit/kit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { sectionEndsAt } from './timing';
-import { computeVerdict, elapsedSeconds } from './verdict';
+import { makeSessionOrders } from './ordering';
+import { computeAutoVerdict, computeVerdict, elapsedSeconds } from './verdict';
+
+/** v1.2: self-paced sessions are completed automatically this long after sectionEndsAt. */
+export const SELF_PACED_AUTO_COMPLETE_MS = 60_000;
 
 /** Enough for a SessionSummary (lists): counts only for recordings and integrity flags. */
 export const SESSION_SUMMARY_INCLUDE = {
@@ -89,6 +94,10 @@ export function toResponseRecord(r: SessionRow['responses'][number]): ResponseRe
     candidateAnswer: r.candidateAnswer ?? null,
     candidateAnswerAt: iso(r.candidateAnswerAt),
     firstPresentedAt: iso(r.firstPresentedAt),
+    choice: r.choice ?? null,
+    autoScore: r.autoScore ?? null,
+    aiDraftNote: null, // transcription not built yet
+    aiDraftAt: null,
   };
 }
 
@@ -121,6 +130,14 @@ export function toEvent(e: SessionRow['events'][number]): IntegrityEvent {
 }
 
 export function verdictFor(row: SessionSummaryRow, ctx: SectionContext): Verdict | null {
+  if (ctx.section.scoring === 'auto') {
+    return computeAutoVerdict(
+      ctx.section,
+      ctx.questions.map((q) => ({ key: q.key, domain: q.domain })),
+      row.responses.map((r) => ({ questionKey: r.questionKey, choice: r.choice ?? null, autoScore: r.autoScore ?? null })),
+      row.status === 'completed',
+    );
+  }
   if (ctx.section.scoring !== 'rubric') return null;
   return computeVerdict(
     ctx.section,
@@ -164,7 +181,72 @@ export function toSession(row: SessionRow, kit: LoadedKit, now = new Date()): Se
     events: row.events.map(toEvent),
     sectionEndsAt: iso(sectionEndsAt(row.startedAt, ctx.section.timeMinutes, row.extensionMinutes)),
     extensionMinutes: row.extensionMinutes,
+    questionOrder: Array.isArray(row.questionOrder) ? (row.questionOrder as string[]).map(String) : null,
+    transcript: { status: 'none', model: null, noteModel: null, updatedAt: null, error: null, lines: [] }, // transcription not built yet
+    market: null, // WIRE(market): SessionMarket for market sections
   };
+}
+
+/** v1.2: the shape both the interviewer's /present and the candidate's /navigate apply. */
+export interface PresentTarget {
+  id: string;
+  status: string;
+  presentedQuestionKey: string | null;
+  presentedAt: Date | null;
+  startedAt: Date | null;
+}
+
+/** Adds the elapsed time of the currently presented question to its response. */
+export async function accountPresentedTime(tx: Prisma.TransactionClient, row: PresentTarget, now: Date): Promise<void> {
+  if (!row.presentedQuestionKey || !row.presentedAt) return;
+  const secs = elapsedSeconds(row.presentedAt, now);
+  await tx.response.upsert({
+    where: { sessionId_questionKey: { sessionId: row.id, questionKey: row.presentedQuestionKey } },
+    create: { sessionId: row.id, questionKey: row.presentedQuestionKey, timeSpentSeconds: secs },
+    update: { timeSpentSeconds: { increment: secs } },
+  });
+}
+
+/** Presents a question (or null = intro): time accounting, firstPresentedAt, version bump; starts a ready session. */
+export async function applyPresent(tx: Prisma.TransactionClient, row: PresentTarget, questionKey: string | null, now: Date): Promise<void> {
+  await accountPresentedTime(tx, row, now);
+  if (questionKey !== null) {
+    // v1: remember the first presentation (never reset) so answers and playback can key off it.
+    await tx.response.upsert({
+      where: { sessionId_questionKey: { sessionId: row.id, questionKey } },
+      create: { sessionId: row.id, questionKey, firstPresentedAt: now },
+      update: {},
+    });
+    await tx.response.updateMany({
+      where: { sessionId: row.id, questionKey, firstPresentedAt: null },
+      data: { firstPresentedAt: now },
+    });
+  }
+  await tx.session.update({
+    where: { id: row.id },
+    data: {
+      presentedQuestionKey: questionKey,
+      presentedAt: questionKey === null ? null : now,
+      version: { increment: 1 },
+      ...(row.status === 'ready' ? { status: 'live', startedAt: now } : {}),
+    },
+  });
+}
+
+/** Completes a session: time accounting, endedAt, intro screen, version bump. */
+export async function applyEnd(tx: Prisma.TransactionClient, row: PresentTarget, now: Date): Promise<void> {
+  await accountPresentedTime(tx, row, now);
+  await tx.session.update({
+    where: { id: row.id },
+    data: {
+      status: 'completed',
+      presentedQuestionKey: null,
+      presentedAt: null,
+      endedAt: now,
+      startedAt: row.startedAt ?? now,
+      version: { increment: 1 },
+    },
+  });
 }
 
 export function toSummary(row: SessionSummaryRow, kit: LoadedKit, superseded: boolean): SessionSummary {
@@ -188,9 +270,49 @@ export function toSummary(row: SessionSummaryRow, kit: LoadedKit, superseded: bo
   };
 }
 
+/** v1.2: crypto-random question and choice orders for a shuffled section. */
+function shuffleData(questions: QuestionRow[]): Pick<Prisma.SessionUncheckedCreateInput, 'questionOrder' | 'choiceOrders'> {
+  const { questionOrder, choiceOrders } = makeSessionOrders(questions.map((q) => ({ key: q.key, mode: q.mode, choices: q.choices })));
+  return { questionOrder: questionOrder as unknown as Prisma.InputJsonValue, choiceOrders: choiceOrders as unknown as Prisma.InputJsonValue };
+}
+
+function selfPaced(): never {
+  throw new ConflictException({ statusCode: 409, message: 'self-paced section: the candidate drives', reason: 'self_paced' });
+}
+
 @Injectable()
 export class SessionsService {
+  private readonly logger = new Logger(SessionsService.name);
+
   constructor(private readonly prisma: PrismaService, private readonly kits: KitService) {}
+
+  /** v1.2: completes self-paced live sessions once sectionEndsAt + 60 s has passed. Runs every minute. */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async completeExpiredSelfPaced(now = new Date()): Promise<number> {
+    const live = await this.prisma.session.findMany({
+      where: { status: 'live', startedAt: { not: null } },
+      select: { id: true, orgId: true, kitId: true, section: true, status: true, presentedQuestionKey: true, presentedAt: true, startedAt: true, extensionMinutes: true, kit: { select: { sections: true } } },
+    });
+    let done = 0;
+    for (const s of live) {
+      const section = ((s.kit.sections as unknown as SectionSeed[]) ?? []).find((x) => x.key === s.section);
+      if (!section?.selfPaced) continue;
+      const endsAt = sectionEndsAt(s.startedAt, section.timeMinutes, s.extensionMinutes);
+      if (!endsAt || now.getTime() < endsAt.getTime() + SELF_PACED_AUTO_COMPLETE_MS) continue;
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          const fresh = await tx.session.findFirst({ where: { id: s.id, status: 'live' }, select: { id: true } });
+          if (!fresh) return;
+          await applyEnd(tx, s, now);
+          done += 1;
+        });
+        this.logger.log(`self-paced session ${s.id} auto-completed`);
+      } catch (e) {
+        this.logger.warn(`auto-complete failed for session ${s.id}: ${(e as Error).message}`);
+      }
+    }
+    return done;
+  }
 
   private async row(orgId: string, id: string): Promise<SessionRow> {
     const row = await this.prisma.session.findFirst({ where: { id, orgId }, include: SESSION_INCLUDE });
@@ -234,6 +356,7 @@ export class SessionsService {
         interviewer,
         candidateToken: randomBytes(24).toString('base64url'),
         recordingRequired: recordingRequired ?? !!section.candidateView,
+        ...(section.shuffle ? shuffleData(sectionContext(kit, sectionKey).questions) : {}),
       },
       include: SESSION_INCLUDE,
     });
@@ -253,6 +376,8 @@ export class SessionsService {
 
   async start(orgId: string, id: string): Promise<Session> {
     const row = await this.row(orgId, id);
+    const kit = await this.kits.kitById(orgId, row.kitId);
+    if (sectionContext(kit, row.section).section.selfPaced) selfPaced();
     if (row.status === 'live') return this.present_(orgId, id);
     if (row.status !== 'ready') throw new ConflictException(`cannot start a ${row.status} session`);
     await this.prisma.session.update({
@@ -262,50 +387,17 @@ export class SessionsService {
     return this.present_(orgId, id);
   }
 
-  /** Adds the elapsed time of the currently presented question to its response. */
-  private async accountTime(tx: Prisma.TransactionClient, row: SessionRow, now: Date): Promise<void> {
-    if (!row.presentedQuestionKey || !row.presentedAt) return;
-    const secs = elapsedSeconds(row.presentedAt, now);
-    await tx.response.upsert({
-      where: { sessionId_questionKey: { sessionId: row.id, questionKey: row.presentedQuestionKey } },
-      create: { sessionId: row.id, questionKey: row.presentedQuestionKey, timeSpentSeconds: secs },
-      update: { timeSpentSeconds: { increment: secs } },
-    });
-  }
-
   async present(orgId: string, id: string, questionKey: string | null): Promise<Session> {
     const row = await this.row(orgId, id);
     if (row.status === 'completed') throw new ConflictException('session is completed');
     const kit = await this.kits.kitById(orgId, row.kitId);
     const ctx = sectionContext(kit, row.section);
+    if (ctx.section.selfPaced) selfPaced();
     if (questionKey !== null && !ctx.questions.some((q) => q.key === questionKey)) {
       bad(`question ${questionKey} is not in section ${row.section}`);
     }
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      await this.accountTime(tx, row, now);
-      if (questionKey !== null) {
-        // v1: remember the first presentation (never reset) so answers and playback can key off it.
-        await tx.response.upsert({
-          where: { sessionId_questionKey: { sessionId: id, questionKey } },
-          create: { sessionId: id, questionKey, firstPresentedAt: now },
-          update: {},
-        });
-        await tx.response.updateMany({
-          where: { sessionId: id, questionKey, firstPresentedAt: null },
-          data: { firstPresentedAt: now },
-        });
-      }
-      await tx.session.update({
-        where: { id },
-        data: {
-          presentedQuestionKey: questionKey,
-          presentedAt: questionKey === null ? null : now,
-          version: { increment: 1 },
-          ...(row.status === 'ready' ? { status: 'live', startedAt: now } : {}),
-        },
-      });
-    });
+    await this.prisma.$transaction((tx) => applyPresent(tx, row, questionKey, now));
     return this.present_(orgId, id);
   }
 
@@ -366,20 +458,7 @@ export class SessionsService {
     const row = await this.row(orgId, id);
     if (row.status === 'completed') throw new ConflictException('session already completed');
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      await this.accountTime(tx, row, now);
-      await tx.session.update({
-        where: { id },
-        data: {
-          status: 'completed',
-          presentedQuestionKey: null,
-          presentedAt: null,
-          endedAt: now,
-          startedAt: row.startedAt ?? now,
-          version: { increment: 1 },
-        },
-      });
-    });
+    await this.prisma.$transaction((tx) => applyEnd(tx, row, now));
     return this.present_(orgId, id);
   }
 

@@ -17,6 +17,7 @@ const leakyRow = {
   dataset: { format: 'csv' as const, text: 'a,b\n1,2' },
   code: { language: 'python', text: 'print(1)' },
   timeMinutes: 2,
+  choices: null,
   title: SECRETS.title,
   modelAnswer: SECRETS.modelAnswer,
   rubric: { '3': SECRETS.rubric3, '2': 'x', '1': 'y', '0': SECRETS.rubric0 },
@@ -28,28 +29,29 @@ const leakyRow = {
 
 const base: CandidateStateInput = {
   orgName: 'G-20 Group',
-  section: { candidateLabel: 'Written test — Part A', showInstructions: true },
+  section: { candidateLabel: 'Written test — Part A', showInstructions: true, selfPaced: false, autoScoring: null, candidateInstructions: null },
   candidateInstructions: 'Show your working.',
   status: 'live',
   presentedQuestionKey: SECRETS.key,
   presentedAt: new Date('2026-09-27T12:00:00.000Z'),
   version: 4,
-  sectionQuestions: [{ key: 'A1', prompt: 'first', dataset: null, code: null, timeMinutes: 1 }, leakyRow],
+  sectionQuestions: [{ key: 'A1', prompt: 'first', dataset: null, code: null, timeMinutes: 1, choices: null }, leakyRow],
   now: new Date('2026-09-27T12:00:05.000Z'),
   recordingRequired: true,
   consentAt: new Date('2026-09-27T11:55:00.000Z'),
   retentionDays: 90,
-  presentedAnswer: { candidateAnswer: 'my typed answer', candidateAnswerAt: new Date('2026-09-27T12:00:03.000Z') },
+  presentedAnswer: { candidateAnswer: 'my typed answer', candidateAnswerAt: new Date('2026-09-27T12:00:03.000Z'), displayChoice: null },
+  answeredPositions: [2],
   sectionEndsAt: new Date('2026-09-27T12:12:00.000Z'),
 };
 
 const STATE_KEYS = [
   'phase', 'orgName', 'sectionLabel', 'instructions', 'question', 'presentedAt', 'serverNow', 'version',
-  'recording', 'answer', 'sectionEndsAt',
+  'recording', 'answer', 'sectionEndsAt', 'selfPaced', 'answeredPositions', 'marking', 'market',
 ].sort();
-const QUESTION_KEYS = ['position', 'total', 'prompt', 'dataset', 'code', 'timeMinutes'].sort();
+const QUESTION_KEYS = ['position', 'total', 'prompt', 'dataset', 'code', 'timeMinutes', 'choices'].sort();
 const RECORDING_KEYS = ['required', 'consentGiven', 'consentText'].sort();
-const ANSWER_KEYS = ['text', 'savedAt'].sort();
+const ANSWER_KEYS = ['text', 'savedAt', 'choice'].sort();
 
 describe('buildCandidateState', () => {
   it('returns exactly the CandidateState and CandidateQuestion keys', () => {
@@ -63,13 +65,15 @@ describe('buildCandidateState', () => {
       dataset: { format: 'csv', text: 'a,b\n1,2' },
       code: { language: 'python', text: 'print(1)' },
       timeMinutes: 2,
+      choices: null,
     });
     expect(state.presentedAt).toBe('2026-09-27T12:00:00.000Z');
     expect(state.serverNow).toBe('2026-09-27T12:00:05.000Z');
     expect(state.version).toBe(4);
     expect(Object.keys(state.recording).sort()).toEqual(RECORDING_KEYS);
     expect(Object.keys(state.answer!).sort()).toEqual(ANSWER_KEYS);
-    expect(state.answer).toEqual({ text: 'my typed answer', savedAt: '2026-09-27T12:00:03.000Z' });
+    expect(state.answer).toEqual({ text: 'my typed answer', savedAt: '2026-09-27T12:00:03.000Z', choice: null });
+    expect(state).toMatchObject({ selfPaced: false, answeredPositions: [2], marking: null, market: null });
     expect(state.sectionEndsAt).toBe('2026-09-27T12:12:00.000Z');
   });
 
@@ -91,10 +95,11 @@ describe('buildCandidateState', () => {
   });
 
   it('answer: empty when nothing typed, null outside the question phase; sectionEndsAt null when untimed', () => {
-    expect(buildCandidateState({ ...base, presentedAnswer: null }).answer).toEqual({ text: '', savedAt: null });
-    expect(buildCandidateState({ ...base, presentedAnswer: { candidateAnswer: null, candidateAnswerAt: null } }).answer).toEqual({
+    expect(buildCandidateState({ ...base, presentedAnswer: null }).answer).toEqual({ text: '', savedAt: null, choice: null });
+    expect(buildCandidateState({ ...base, presentedAnswer: { candidateAnswer: null, candidateAnswerAt: null, displayChoice: null } }).answer).toEqual({
       text: '',
       savedAt: null,
+      choice: null,
     });
     expect(buildCandidateState({ ...base, status: 'ready', presentedQuestionKey: null }).answer).toBeNull();
     expect(buildCandidateState({ ...base, status: 'live', presentedQuestionKey: null }).answer).toBeNull();

@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useParams } from 'react-router-dom';
+import { CandidateMarketPanel } from '../market/CandidateMarketPanel';
 import type { AutoScoring, CandidateState } from '@contracts/api';
 import { api, ApiError } from '../api/client';
 import { CodeBlock } from '../components/CodeBlock';
@@ -179,6 +180,11 @@ export function CandidateView() {
             ) : (
               <p className="text-lg text-slate-700">Your interviewer will present the first question shortly.</p>
             )}
+          </div>
+        )}
+        {state.market && (state.phase === 'intro' || state.phase === 'question') && (
+          <div className="mx-auto mt-6 max-w-3xl">
+            <CandidateMarketPanel state={state} token={token} onState={(s) => apply(s)} />
           </div>
         )}
         {state.phase === 'question' && state.question && state.selfPaced && (

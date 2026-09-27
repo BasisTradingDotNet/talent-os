@@ -27,6 +27,7 @@ import { CodeBlock } from '../components/CodeBlock';
 import { CopyButton } from '../components/CopyButton';
 import { DatasetTable } from '../components/DatasetTable';
 import { Markdown } from '../components/Markdown';
+import { MarketConsolePanel } from '../market/MarketConsolePanel';
 import { Countdown, Elapsed } from '../components/Timer';
 import { fmtScore } from '../lib/summary';
 import { fmtClock, fmtDate, serverOffset, useTick } from '../lib/time';
@@ -108,6 +109,8 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
     api().updateSession(session.id, body),
   );
   const extendMut = useSessionMutation(session.id, (minutes: number) => api().extendSession(session.id, { minutes }));
+  // Market calls return the full Session; route it through the cache like every other mutation.
+  const marketMut = useSessionMutation(session.id, (s: Session) => Promise.resolve(s));
 
   const present = useCallback(
     (key: string | null) => {
@@ -338,6 +341,11 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
             </div>
           )}
 
+          {section.scoring === 'market' && (
+            <div className="mb-4">
+              <MarketConsolePanel session={session} kit={kit} onSession={(s) => marketMut.mutate(s)} />
+            </div>
+          )}
           {selected ? (
             <QuestionPanel
               q={selected}

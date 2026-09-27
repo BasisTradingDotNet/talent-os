@@ -131,7 +131,7 @@ model Session {
   kitId                String
   kit                  Kit          @relation(fields: [kitId], references: [id])
   section              String
-  /// ready | live | completed
+  /// ready | live | completed | cancelled (v1.3: voided before it started; the link answers 404)
   status               String       @default("ready")
   interviewer          String
   candidateToken       String       @unique

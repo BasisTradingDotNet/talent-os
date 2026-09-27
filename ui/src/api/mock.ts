@@ -386,7 +386,8 @@ export async function createMockClient(): Promise<ApiClient> {
 
   const sessionByToken = (token: string) => {
     const row = store.sessions.find((s) => s.token === token);
-    if (!row) throw new ApiError(404, 'Not found');
+    // v1.3: a cancelled link is dead — indistinguishable from an unknown token.
+    if (!row || row.status === 'cancelled') throw new ApiError(404, 'Not found');
     if (!section(row.section).candidateView) throw new ApiError(404, 'Not found');
     return row;
   };
@@ -431,8 +432,10 @@ export async function createMockClient(): Promise<ApiClient> {
     });
   };
 
+  // v1.3: cancelled sessions never ran — they neither supersede nor get superseded.
   const isSuperseded = (row: SessionRow) =>
-    store.sessions.some((o) => o.candidateId === row.candidateId && o.section === row.section && o.createdAt > row.createdAt);
+    row.status !== 'cancelled' &&
+    store.sessions.some((o) => o.status !== 'cancelled' && o.candidateId === row.candidateId && o.section === row.section && o.createdAt > row.createdAt);
 
   const toSummary = (row: SessionRow): SessionSummary => ({
     id: row.id,
@@ -457,6 +460,7 @@ export async function createMockClient(): Promise<ApiClient> {
     const latest: Record<string, SessionSummary> = {};
     let stageReached = 0;
     for (const r of rows) {
+      if (r.status === 'cancelled') continue; // v1.3: listed in the detail, never latest, never a stage
       const sec = section(r.section);
       stageReached = Math.max(stageReached, sec.stage);
       if (!isSuperseded(r)) latest[r.section] = toSummary(r);
@@ -667,8 +671,20 @@ export async function createMockClient(): Promise<ApiClient> {
       fresh();
       const row = sessionRow(id);
       if (row.status === 'completed') throw new ApiError(409, 'Session already completed');
+      if (row.status === 'cancelled') throw new ApiError(409, 'Session is cancelled');
       finishSession(row);
       commit();
+      return toSession(row);
+    },
+    async cancelSession(id) {
+      await delay();
+      fresh();
+      const row = sessionRow(id);
+      if (row.status !== 'ready') throw new ApiError(409, `Cannot cancel a ${row.status} session`, { reason: 'not_ready' });
+      row.status = 'cancelled';
+      row.endedAt = nowIso();
+      row.segments = []; // device-check footage is deleted
+      commit(row);
       return toSession(row);
     },
     async reopenSession(id) {
@@ -685,7 +701,7 @@ export async function createMockClient(): Promise<ApiClient> {
       await delay();
       fresh();
       const row = sessionRow(id);
-      if (row.status === 'completed') throw new ApiError(409, 'Session is completed');
+      if (row.status === 'completed' || row.status === 'cancelled') throw new ApiError(409, `Session is ${row.status}`);
       if (!Number.isInteger(body.minutes) || body.minutes < 1 || body.minutes > 60) throw new ApiError(400, 'minutes must be an integer 1–60');
       row.extensionMinutes += body.minutes;
       commit(row);

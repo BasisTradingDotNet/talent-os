@@ -81,11 +81,14 @@ export class CandidateViewService {
     private readonly market: MarketService,
   ) {}
 
-  /** 404 for unknown tokens and for sections without a candidate view. Never reveals which. */
+  /**
+   * 404 for unknown tokens, for cancelled sessions (v1.3: the link is dead) and for sections
+   * without a candidate view. Never reveals which. Every candidate endpoint goes through here.
+   */
   async load(token: string): Promise<TokenSession> {
     if (!TOKEN.test(token)) throw new NotFoundException();
     const session = await this.prisma.session.findUnique({ where: { candidateToken: token }, select: TOKEN_SESSION_SELECT });
-    if (!session) throw new NotFoundException();
+    if (!session || session.status === 'cancelled') throw new NotFoundException();
     const section = ((session.kit.sections as unknown as SectionSeed[]) ?? []).find((s) => s.key === session.section);
     if (!section || !section.candidateView) throw new NotFoundException();
     return { session, section };

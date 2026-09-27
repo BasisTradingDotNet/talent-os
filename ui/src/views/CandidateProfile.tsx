@@ -88,35 +88,42 @@ function Profile({ c, sections, decisionOptions }: { c: CandidateDetail; section
                 ) : (
                   <table className="w-full text-sm">
                     <tbody>
-                      {rows.map((ss) => (
-                        <tr key={ss.id} className={`border-t border-slate-100 ${ss.superseded ? 'text-slate-400' : ''}`}>
-                          <td className="py-1.5 pr-3">
-                            <Link to={`/sessions/${ss.id}`} className="font-medium hover:underline">
-                              Open
-                            </Link>
-                          </td>
-                          <td className="py-1.5 pr-3">
-                            <StatusChip status={ss.status} />
-                          </td>
-                          <td className="py-1.5 pr-3">
-                            {s.scoring === 'rubric' ? (
-                              <span>
-                                {verdictLine(ss)} {ss.verdict?.complete && <ResultChip verdict={ss.verdict} />}
-                                <span className="ml-2 text-xs text-slate-500">traps {ss.trapsNoticed} · bonuses {ss.bonusesGiven}</span>
-                              </span>
-                            ) : (
-                              <span>
-                                {ss.recommendation ?? '—'} <span className="text-xs text-slate-500">mean {meanRating(ss.ratings) ?? '—'}/5</span>
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-1.5 pr-3 text-xs">
-                            <RecordedBadge ss={ss} />
-                          </td>
-                          <td className="py-1.5 pr-3 text-xs text-slate-500">{fmtDate(ss.startedAt ?? ss.createdAt)}</td>
-                          <td className="py-1.5 text-xs">{ss.superseded && <span className="chip bg-slate-100 text-slate-500">superseded</span>}</td>
-                        </tr>
-                      ))}
+                      {rows.map((ss) => {
+                        // v1.3: a cancelled session never ran — greyed and struck through, never the section's result.
+                        const cancelled = ss.status === 'cancelled';
+                        const strike = cancelled ? 'line-through' : '';
+                        return (
+                          <tr key={ss.id} className={`border-t border-slate-100 ${cancelled || ss.superseded ? 'text-slate-400' : ''}`} data-testid={`session-row-${ss.status}`}>
+                            <td className={`py-1.5 pr-3 ${strike}`}>
+                              <Link to={`/sessions/${ss.id}`} className="font-medium hover:underline">
+                                Open
+                              </Link>
+                            </td>
+                            <td className="py-1.5 pr-3">
+                              <StatusChip status={ss.status} />
+                            </td>
+                            <td className={`py-1.5 pr-3 ${strike}`}>
+                              {cancelled ? (
+                                <span className="text-xs">never started</span>
+                              ) : s.scoring === 'rubric' ? (
+                                <span>
+                                  {verdictLine(ss)} {ss.verdict?.complete && <ResultChip verdict={ss.verdict} />}
+                                  <span className="ml-2 text-xs text-slate-500">traps {ss.trapsNoticed} · bonuses {ss.bonusesGiven}</span>
+                                </span>
+                              ) : (
+                                <span>
+                                  {ss.recommendation ?? '—'} <span className="text-xs text-slate-500">mean {meanRating(ss.ratings) ?? '—'}/5</span>
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-1.5 pr-3 text-xs">
+                              <RecordedBadge ss={ss} />
+                            </td>
+                            <td className={`py-1.5 pr-3 text-xs text-slate-500 ${strike}`}>{fmtDate(ss.startedAt ?? ss.createdAt)}</td>
+                            <td className="py-1.5 text-xs">{ss.superseded && <span className="chip bg-slate-100 text-slate-500">superseded</span>}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Patch, Post, Put, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import type { Session, UpdateRating, UpdateResponse, UpdateSession } from '../contracts/api';
 import { asObject, bad, optBool, optNullableInt, optNullableString, optString, reqString } from '../common/validate';
@@ -105,6 +105,14 @@ export class SessionsController {
   async reopen(@Param('id') id: string): Promise<Session> {
     const org = await this.kits.org();
     return this.sessions.reopen(org.id, id);
+  }
+
+  /** v1.3: ready → cancelled; 409 {reason:'not_ready'} otherwise. The candidate link then answers 404. */
+  @Post(':id/cancel')
+  @HttpCode(200)
+  async cancel(@Param('id') id: string): Promise<Session> {
+    const org = await this.kits.org();
+    return this.sessions.cancel(org.id, id);
   }
 
   /** v1.1 */

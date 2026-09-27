@@ -109,7 +109,9 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
     [live, presentedKey, selectedKey, questions, present],
   );
 
-  const response = selected ? (session.responses.find((r) => r.questionKey === selected.key) ?? EMPTY_RESPONSE(selected.key)) : null;
+  // Stable placeholder for untouched questions so the optimistic scoring panel is not reset each render.
+  const emptyResponse = useMemo(() => (selectedKey ? EMPTY_RESPONSE(selectedKey) : null), [selectedKey]);
+  const response = selected ? (session.responses.find((r) => r.questionKey === selected.key) ?? emptyResponse) : null;
   const updateResponse = useCallback(
     (key: string, body: UpdateResponse) => respMut.mutate({ key, body }),
     [respMut],
@@ -268,7 +270,7 @@ function ConsoleInner({ session, kit }: { session: Session; kit: Kit }) {
             </button>
             {live && selected && selectedKey !== presentedKey && (
               <button className="btn btn-sm btn-primary" onClick={() => present(selected.key)} data-testid="present">
-                <ArrowRight size={14} /> Present {selected.key} to candidate
+                <ArrowRight size={14} /> Present {selected.key}{section.candidateView ? ' to candidate' : ''}
               </button>
             )}
             {live && presentedKey !== null && (
@@ -507,6 +509,13 @@ function ScoringPanel({
   saving: boolean;
 }) {
   const hasTrap = !!q.trapOrBonus;
+  // Optimistic: flip immediately, then the full Session from the server replaces it.
+  const [local, setLocal] = useState(r);
+  useEffect(() => setLocal(r), [r]);
+  const change = (body: UpdateResponse) => {
+    setLocal((cur) => ({ ...cur, ...body }));
+    onChange(body);
+  };
   return (
     <div className="card p-3">
       <div className="mb-2 flex items-center justify-between">
@@ -521,10 +530,10 @@ function ScoringPanel({
             <button
               key={s}
               type="button"
-              className={`btn h-10 flex-1 justify-center text-base ${r.score === s ? 'btn-primary' : ''}`}
-              onClick={() => onChange({ score: r.score === s ? null : s })}
+              className={`btn h-10 flex-1 justify-center text-base ${local.score === s ? 'btn-primary' : ''}`}
+              onClick={() => change({ score: local.score === s ? null : s })}
               data-testid={`score-${s}`}
-              aria-pressed={r.score === s}
+              aria-pressed={local.score === s}
             >
               {s}
             </button>
@@ -542,25 +551,25 @@ function ScoringPanel({
       <div className={`mt-3 space-y-1.5 rounded-md p-2 text-sm ${hasTrap ? 'border border-amber-300 bg-amber-50' : 'border border-slate-100'}`}>
         {hasTrap && <div className="text-xs font-semibold text-amber-800">This question has a trap / bonus</div>}
         <label className="flex items-center gap-2">
-          <input type="checkbox" checked={r.trapNoticed} onChange={(e) => onChange({ trapNoticed: e.target.checked })} data-testid="trap" />
+          <input type="checkbox" checked={local.trapNoticed} onChange={(e) => change({ trapNoticed: e.target.checked })} data-testid="trap" />
           Trap noticed
         </label>
         <label className="flex items-center gap-2">
-          <input type="checkbox" checked={r.bonusGiven} onChange={(e) => onChange({ bonusGiven: e.target.checked })} data-testid="bonus" />
+          <input type="checkbox" checked={local.bonusGiven} onChange={(e) => change({ bonusGiven: e.target.checked })} data-testid="bonus" />
           Bonus given
         </label>
       </div>
       <div className="mt-3 flex gap-2">
-        <button className={`btn btn-sm flex-1 justify-center ${r.skipped ? 'bg-slate-200' : ''}`} onClick={() => onChange({ skipped: !r.skipped })} aria-pressed={r.skipped} data-testid="skip">
-          <SkipForward size={14} /> {r.skipped ? 'Skipped' : 'Skip'}
+        <button className={`btn btn-sm flex-1 justify-center ${local.skipped ? 'bg-slate-200' : ''}`} onClick={() => change({ skipped: !local.skipped })} aria-pressed={local.skipped} data-testid="skip">
+          <SkipForward size={14} /> {local.skipped ? 'Skipped' : 'Skip'}
         </button>
         <button
-          className={`btn btn-sm flex-1 justify-center ${r.markedForReturn ? 'bg-amber-100 border-amber-300' : ''}`}
-          onClick={() => onChange({ markedForReturn: !r.markedForReturn })}
-          aria-pressed={r.markedForReturn}
+          className={`btn btn-sm flex-1 justify-center ${local.markedForReturn ? 'bg-amber-100 border-amber-300' : ''}`}
+          onClick={() => change({ markedForReturn: !local.markedForReturn })}
+          aria-pressed={local.markedForReturn}
           data-testid="mark"
         >
-          <Bookmark size={14} /> {r.markedForReturn ? 'Marked' : 'Mark for return'}
+          <Bookmark size={14} /> {local.markedForReturn ? 'Marked' : 'Mark for return'}
         </button>
       </div>
       {r.timeSpentSeconds > 0 && <p className="mt-2 text-xs text-slate-500">Time on question so far: {Math.round(r.timeSpentSeconds / 60)} min</p>}
@@ -660,13 +669,16 @@ export function AutosaveTextarea({
   const [text, setText] = useState(value);
   const [state, setState] = useState<'idle' | 'pending' | 'saved'>('idle');
   const dirty = useRef(false);
+  const lastSent = useRef<string | null>(null);
   const timer = useRef<number | undefined>(undefined);
   const latest = useRef(onSave);
   latest.current = onSave;
 
-  // Follow server updates while the user is not mid-edit.
+  // Follow server updates while the user is not mid-edit, and ignore a stale value carried by
+  // another mutation's response while our own save is still in flight.
   useEffect(() => {
-    if (!dirty.current) setText(value);
+    if (dirty.current) return;
+    if (lastSent.current === null || value === lastSent.current) setText(value);
   }, [value]);
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -678,6 +690,7 @@ export function AutosaveTextarea({
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
       dirty.current = false;
+      lastSent.current = v;
       latest.current(v);
       setState('saved');
     }, 600);
@@ -695,6 +708,7 @@ export function AutosaveTextarea({
           if (dirty.current) {
             window.clearTimeout(timer.current);
             dirty.current = false;
+            lastSent.current = text;
             latest.current(text);
             setState('saved');
           }

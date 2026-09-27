@@ -70,7 +70,7 @@ function SectionBlock({ s, kit, ss }: { s: SectionDef; kit: Kit; ss: SessionSumm
   return (
     <div className="mt-5 break-inside-avoid">
       <h2 className="border-b border-slate-300 pb-1 text-sm font-semibold uppercase tracking-wide">
-        Stage {s.stage} · {s.label}
+        {s.label}
       </h2>
       {!ss ? (
         <p className="mt-1 text-slate-400">Not run.</p>

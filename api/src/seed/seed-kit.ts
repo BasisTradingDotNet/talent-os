@@ -15,7 +15,27 @@ function fail(msg: string): never {
   throw new KitSeedError(msg);
 }
 
-const SCORING = new Set(['rubric', 'dimensions']);
+const SCORING = new Set(['rubric', 'dimensions', 'auto', 'market']);
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/** v1.2: validates a MarketConfig (dice | estimate). */
+function validateMarketConfig(m: unknown, where: string): void {
+  const mm = m as Record<string, unknown>;
+  if (!mm || typeof mm !== 'object') fail(`${where}: market must be an object`);
+  if (mm.kind === 'dice') {
+    if (!Number.isInteger(mm.dice) || (mm.dice as number) < 1) fail(`${where}: market.dice must be a positive integer`);
+    if (!Number.isInteger(mm.sides) || (mm.sides as number) < 2) fail(`${where}: market.sides must be an integer >= 2`);
+  } else if (mm.kind === 'estimate') {
+    if (!isFiniteNumber(mm.trueValue)) fail(`${where}: market.trueValue must be a number`);
+    if (typeof mm.unit !== 'string') fail(`${where}: market.unit must be a string`);
+    if (!Array.isArray(mm.hints) || mm.hints.some((h) => typeof h !== 'string')) fail(`${where}: market.hints must be string[]`);
+  } else {
+    fail(`${where}: market.kind must be dice or estimate`);
+  }
+}
 
 /** Validates the shape and the cross-references of a seed; throws KitSeedError with a reason. */
 export function validateKitSeed(input: unknown): KitSeed {
@@ -60,6 +80,23 @@ export function validateKitSeed(input: unknown): KitSeed {
     }
     if (!Array.isArray(sec.recommendationOptions)) fail(`section ${sec.key}: recommendationOptions must be an array`);
     if (!Array.isArray(sec.domainGroups)) fail(`section ${sec.key}: domainGroups must be an array`);
+    // v1.2 fields default when absent.
+    if (sec.selfPaced === undefined) sec.selfPaced = false;
+    if (sec.shuffle === undefined) sec.shuffle = false;
+    if (sec.autoScoring === undefined) sec.autoScoring = null;
+    if (sec.candidateInstructions === undefined) sec.candidateInstructions = null;
+    if (typeof sec.selfPaced !== 'boolean') fail(`section ${sec.key}: selfPaced must be a boolean`);
+    if (typeof sec.shuffle !== 'boolean') fail(`section ${sec.key}: shuffle must be a boolean`);
+    if (sec.candidateInstructions !== null && typeof sec.candidateInstructions !== 'string') {
+      fail(`section ${sec.key}: candidateInstructions must be a string or null`);
+    }
+    if (sec.autoScoring !== null) {
+      const a = sec.autoScoring as Record<string, unknown>;
+      if (!a || typeof a !== 'object' || !isFiniteNumber(a.correct) || !isFiniteNumber(a.wrong) || !isFiniteNumber(a.blank)) {
+        fail(`section ${sec.key}: autoScoring must be {correct,wrong,blank} numbers or null`);
+      }
+    }
+    if (sec.scoring === 'auto' && sec.autoScoring === null) fail(`section ${sec.key}: scoring auto requires autoScoring`);
   }
   if (!Array.isArray(s.questions)) fail('seed.questions must be an array');
   const qKeys = new Set<string>();
@@ -74,6 +111,28 @@ export function validateKitSeed(input: unknown): KitSeed {
     if (typeof q.stage !== 'number') fail(`question ${q.key}: stage must be a number`);
     for (const k of ['title', 'domain', 'mode', 'prompt']) {
       if (typeof q[k] !== 'string') fail(`question ${q.key}: ${k} must be a string`);
+    }
+    // v1.2 fields default to null when absent.
+    if (q.choices === undefined) q.choices = null;
+    if (q.correctChoice === undefined) q.correctChoice = null;
+    if (q.market === undefined) q.market = null;
+    if (q.mode === 'mcq') {
+      const choices = q.choices;
+      if (!Array.isArray(choices) || choices.length < 2 || choices.some((c) => typeof c !== 'string' || !c.trim())) {
+        fail(`question ${q.key}: mcq needs at least 2 non-empty choices`);
+      }
+      if (new Set(choices.map((c) => (c as string).trim())).size !== choices.length) fail(`question ${q.key}: choices must be unique`);
+      if (!Number.isInteger(q.correctChoice) || (q.correctChoice as number) < 0 || (q.correctChoice as number) >= choices.length) {
+        fail(`question ${q.key}: correctChoice must index choices`);
+      }
+    } else {
+      if (q.choices !== null) fail(`question ${q.key}: choices only for mode mcq`);
+      if (q.correctChoice !== null) fail(`question ${q.key}: correctChoice only for mode mcq`);
+    }
+    if (q.mode === 'market') {
+      validateMarketConfig(q.market, `question ${q.key}`);
+    } else if (q.market !== null) {
+      fail(`question ${q.key}: market only for mode market`);
     }
     const arr = numbersBySection.get(q.section) ?? [];
     arr.push(q.number);
@@ -115,6 +174,9 @@ function questionData(q: QuestionSeed) {
     rubric: (q.rubric ?? undefined) as object | undefined,
     trapOrBonus: q.trapOrBonus ?? null,
     whatGoodLooksLike: q.whatGoodLooksLike ?? null,
+    choices: (q.choices ?? undefined) as object | undefined,
+    correctChoice: q.correctChoice ?? null,
+    market: (q.market ?? undefined) as object | undefined,
   };
 }
 

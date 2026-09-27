@@ -76,6 +76,12 @@ model Question {
   rubric            Json?
   trapOrBonus       String?
   whatGoodLooksLike String?
+  /// v1.2: multiple-choice options in canonical order (string[]); null unless mode is mcq.
+  choices           Json?
+  /// v1.2: index into choices of the correct option. NEVER sent to candidates.
+  correctChoice     Int?
+  /// v1.2: MarketConfig (mode market). NEVER sent to candidates.
+  market            Json?
 
   @@unique([kitId, key])
   @@index([kitId, section, number])
@@ -145,6 +151,10 @@ model Session {
   consentVersion       String?
   /// v1.1: minutes the interviewer added to the section time limit.
   extensionMinutes     Int          @default(0)
+  /// v1.2: shuffled sections — question keys in this candidate's display order (string[]).
+  questionOrder        Json?
+  /// v1.2: per question key, display index → canonical choice index (Record<string, number[]>).
+  choiceOrders         Json?
   responses            Response[]
   ratings              Rating[]
   segments             RecordingSegment[]
@@ -171,6 +181,10 @@ model Response {
   candidateAnswerAt DateTime?
   /// v1: first time the question was presented (never reset).
   firstPresentedAt  DateTime?
+  /// v1.2: canonical index of the candidate's choice (mcq); null = blank.
+  choice            Int?
+  /// v1.2: points under section.autoScoring (auto sections).
+  autoScore         Float?
 
   @@unique([sessionId, questionKey])
 }

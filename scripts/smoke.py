@@ -22,8 +22,8 @@ EMAIL = os.environ.get("EMAIL", "smoke@basistrading.net")
 AUTH = {"cf-access-authenticated-user-email": EMAIL}
 
 STATE_KEYS = {"phase", "orgName", "sectionLabel", "instructions", "question", "presentedAt", "serverNow", "version",
-              "recording", "answer", "sectionEndsAt"}
-QUESTION_KEYS = {"position", "total", "prompt", "dataset", "code", "timeMinutes"}
+              "recording", "answer", "sectionEndsAt", "selfPaced", "answeredPositions", "marking", "market"}
+QUESTION_KEYS = {"position", "total", "prompt", "dataset", "code", "timeMinutes", "choices"}
 
 failures = []
 

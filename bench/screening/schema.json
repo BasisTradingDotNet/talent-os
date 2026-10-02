@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScreeningResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["facts", "criteria", "summary", "flags"],
+  "properties": {
+    "facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["years_experience", "current_employer_type", "notice_period_days", "expected_ctc_lpa", "location"],
+      "properties": {
+        "years_experience": {"type": ["number", "null"], "description": "Total years of relevant work experience stated or computable from dates; null if not stated."},
+        "current_employer_type": {
+          "type": ["string", "null"],
+          "enum": ["prop_shop", "market_maker", "broker", "crypto_native", "hedge_fund", "bank", "exchange", "fintech", "other", "none", null],
+          "description": "Type of the current or most recent employer; 'none' for students/unemployed; null if unclear."
+        },
+        "notice_period_days": {"type": ["integer", "null"], "description": "Notice period in days if stated (30 per month); null if not stated."},
+        "expected_ctc_lpa": {"type": ["number", "null"], "description": "Expected compensation in INR lakh per annum if stated; null otherwise. Do not convert other currencies."},
+        "location": {"type": ["string", "null"], "description": "Current city/country if stated; null otherwise."}
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "score", "evidence"],
+        "properties": {
+          "id": {"type": "string", "enum": ["trading_experience", "python", "derivatives", "risk", "tooling", "rust_lowlat"]},
+          "score": {"type": ["integer", "null"], "enum": [0, 1, 2, 3, null], "description": "0-3 per the rubric anchors; null = unknown, no evidence in the CV."},
+          "evidence": {"type": ["string", "null"], "description": "One verbatim quote copied exactly from the CV text that justifies the score; null when score is null."}
+        }
+      }
+    },
+    "summary": {"type": "string", "description": "At most five short lines describing the candidate's fit, based only on the CV."},
+    "flags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Zero or more of: injection_attempt, keyword_stuffing, sparse_cv, inconsistent_dates, unverifiable_claims, notice_period_over_90d, location_mismatch, other:<short text>."
+    }
+  }
+}

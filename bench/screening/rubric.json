@@ -1,0 +1,88 @@
+{
+  "id": "quant-trader-basis-desk-screening",
+  "version": "1.0.0",
+  "job": {
+    "title": "Quant Trader, Basis Trading Desk",
+    "org": "G-20 Group / Basis Trading",
+    "location": "India (remote)",
+    "profile": "2-4 years at a prop shop, market maker, broker desk or crypto-native firm; strong production Python; working understanding of perps, funding, basis, margin and liquidation; real risk discipline; calm, clear communicator; willing to learn Rust. Hybrid trader-developer building execution analytics, reconciliation, reporting and automation."
+  },
+  "core_criteria": ["trading_experience", "python", "derivatives"],
+  "criteria": [
+    {
+      "id": "trading_experience",
+      "name": "Relevant trading experience",
+      "core": true,
+      "anchors": {
+        "0": "No trading-desk experience: unrelated roles only, or a student with no trading work.",
+        "1": "Under about two years, or only adjacent to a desk: internship, trading operations or settlements, research support, personal or retail trading, exchange or fintech engineering without a trading seat.",
+        "2": "About 2-4 years in a trading or quant role at a prop shop, market maker, broker desk or crypto-native firm, with the role and dates stated.",
+        "3": "As 2, plus clear ownership: named strategies, PnL or book responsibility, or desk workflows owned end to end (for example ran the basis or funding book, owned execution for a venue)."
+      }
+    },
+    {
+      "id": "python",
+      "name": "Production Python",
+      "core": true,
+      "anchors": {
+        "0": "No Python evidence.",
+        "1": "Python only in notebooks, coursework or ad-hoc scripts, or listed as a skill with no production use described.",
+        "2": "Python running in production with concrete detail: a named service, pipeline or library, with tests, deployment, scheduling or monitoring mentioned.",
+        "3": "As 2, plus ownership of production Python systems: testing or CI, packaging, monitoring or on-call, reviewing others' code, performance work, or systems others depend on daily."
+      }
+    },
+    {
+      "id": "derivatives",
+      "name": "Derivatives mechanics (perps, funding, basis, margin, liquidation)",
+      "core": true,
+      "anchors": {
+        "0": "No evidence of derivatives knowledge.",
+        "1": "Generic mentions only ('crypto trading', 'futures', 'derivatives', 'DeFi') with no mechanics.",
+        "2": "Working understanding shown through specific work: funding-rate tracking or capture, basis calculation or cash-and-carry, margin monitoring, liquidation-price handling, mark versus index price, cross-margin behaviour.",
+        "3": "Deep: designed or ran systems for funding or basis capture, margin optimisation across venues, liquidation modelling, or explains the mechanics quantitatively (annualised basis, funding settlement cadence, maintenance-margin ladders)."
+      }
+    },
+    {
+      "id": "risk",
+      "name": "Risk discipline",
+      "core": false,
+      "anchors": {
+        "0": "No evidence.",
+        "1": "Generic claims only ('strong risk management', 'risk-aware').",
+        "2": "Concrete practice: position or exposure limits, kill switches, pre-trade checks, drawdown limits, monitoring and alerts, incident handling or post-mortems.",
+        "3": "Owned the risk framework: designed limits and controls, reconciliation checks, incident response with measurable outcomes (losses avoided, zero limit breaches), or risk reporting used by others."
+      }
+    },
+    {
+      "id": "tooling",
+      "name": "Tooling built and run in production (execution analytics, reconciliation, reporting, automation)",
+      "core": false,
+      "anchors": {
+        "0": "None.",
+        "1": "Ad-hoc scripts, spreadsheets or dashboards for own use.",
+        "2": "Built tooling used by a desk or team in production: reconciliation, reporting, execution analytics (fills, slippage, TCA) or automation of a daily process.",
+        "3": "Built and operated several production tools with ownership, users beyond self, reliability practices and measurable impact."
+      }
+    },
+    {
+      "id": "rust_lowlat",
+      "name": "Rust / low-latency (bonus)",
+      "core": false,
+      "anchors": {
+        "0": "None.",
+        "1": "Learning Rust, or some C++ or Rust exposure (coursework, side project), or stated willingness to learn backed by some evidence.",
+        "2": "Shipped Rust or C++ code, or meaningful latency engineering (profiling, async I/O, lock-free structures) in any setting.",
+        "3": "Production Rust or C++ in trading systems (order gateways, market-data handlers, matching) with latency figures."
+      }
+    }
+  ],
+  "tier_rule": {
+    "description": "Deterministic. Scores are 0-3; a null (unknown, no evidence) counts as 0 here and is reported separately. total = sum of all six scores. core = trading_experience, python, derivatives. Rules are checked in order.",
+    "rules": [
+      {"tier": "Unlikely", "when": "any core criterion == 0 (including unknown), OR total <= 6"},
+      {"tier": "Strong", "when": "every core criterion >= 2 AND risk >= 2 AND total >= 12"},
+      {"tier": "Possible", "when": "otherwise"}
+    ],
+    "implementation": "rules.py:derive_tier"
+  }
+}
